@@ -1493,7 +1493,7 @@
             if (isLanIpv4(h) && window.location.protocol === "https:") {
                 showConnectPanel(
                     "GitHub Pages 是 HTTPS，不能直連區網 IP。\n" +
-                    "請填 cloudflared tunnel 主機，或改開本機：http://你的TD_IP:5757/?port=" + tdPort
+                    "請填 zrok / tunnel 主機（例如 xxx.share.zrok.io）。"
                 );
                 return false;
             }
