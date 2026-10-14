@@ -182,6 +182,106 @@
         #osc-enable-btn[hidden] {
             display: none !important;
         }
+
+        #connect-panel {
+            position: fixed;
+            inset: 0;
+            z-index: 200;
+            display: none;
+            place-items: center;
+            background:
+                radial-gradient(ellipse at 30% 20%, rgba(61, 126, 255, 0.18), transparent 50%),
+                #0a0c10;
+            color: #e8eef8;
+            font-family: "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+            padding: 24px;
+            box-sizing: border-box;
+        }
+
+        #connect-panel.show {
+            display: grid;
+        }
+
+        #connect-card {
+            width: min(420px, 100%);
+            background: rgba(16, 20, 28, 0.92);
+            border: 1px solid rgba(120, 160, 220, 0.28);
+            border-radius: 16px;
+            padding: 22px 20px 18px;
+            box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+        }
+
+        #connect-card h1 {
+            margin: 0 0 6px;
+            font-size: 1.25rem;
+            font-weight: 650;
+            letter-spacing: 0.04em;
+        }
+
+        #connect-card p {
+            margin: 0 0 16px;
+            color: #9aa8bc;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        #connect-card label {
+            display: block;
+            margin: 0 0 6px;
+            font-size: 0.78rem;
+            color: #8fa0b8;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        #connect-card input {
+            width: 100%;
+            box-sizing: border-box;
+            margin: 0 0 12px;
+            padding: 11px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(120, 160, 220, 0.28);
+            background: #0b1018;
+            color: #e8eef8;
+            font-size: 15px;
+        }
+
+        #connect-card .row {
+            display: grid;
+            grid-template-columns: 1fr 100px;
+            gap: 10px;
+        }
+
+        #connect-go {
+            width: 100%;
+            margin-top: 4px;
+            padding: 12px 14px;
+            border: none;
+            border-radius: 999px;
+            background: #3d7eff;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            letter-spacing: 0.04em;
+        }
+
+        #connect-go:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        #connect-status {
+            margin: 12px 0 0;
+            min-height: 1.2em;
+            font-size: 0.85rem;
+            color: #f0b4b4;
+            white-space: pre-wrap;
+        }
+
+        #connect-status.ok {
+            color: #9fd89f;
+        }
     </style>
 </head>
 <body>
@@ -191,6 +291,23 @@
     <div id="fullscreen-container">
         <video id="remoteVideo" playsinline autoplay muted></video>
         <canvas id="freezeFrameCanvas"></canvas>
+    </div>
+    <div id="connect-panel" aria-hidden="true">
+        <div id="connect-card">
+            <h1>接收 TD 畫面</h1>
+            <p>輸入 TouchDesigner Signaling（WSS）。GitHub Pages 必須用 tunnel 主機，不能填區網 IP。</p>
+            <label for="connect-ws">Signaling Host</label>
+            <input id="connect-ws" type="text" autocomplete="off" spellcheck="false" placeholder="xxxx.trycloudflare.com" />
+            <div class="row">
+                <div>
+                    <label for="connect-port">Port</label>
+                    <input id="connect-port" type="text" inputmode="numeric" value="443" />
+                </div>
+                <div style="align-self:end;padding-bottom:12px;color:#6f7f96;font-size:12px;text-align:center;">WSS</div>
+            </div>
+            <button id="connect-go" type="button">連接並收看</button>
+            <div id="connect-status"></div>
+        </div>
     </div>
     <div id="td-signal-hud" hidden><kbd>tdsignal</kbd> 等待 JSON…</div>
     <div id="osc-hud" hidden>OSC 待命</div>
@@ -1219,21 +1336,116 @@
             tdSignalTimer = setInterval(tick, Math.max(50, signalPollMs));
         }
 
-        function showPagesWsHint() {
-            const hud = document.getElementById("td-signal-hud");
-            const tip =
-                "GitHub Pages 需指定公網 WSS signaling：\n" +
-                "?ws=你的tunnel主機&port=443\n" +
-                "例：?ws=xxxx.trycloudflare.com&port=443";
-            if (hud) {
-                hud.hidden = false;
-                hud.style.pointerEvents = "auto";
-                hud.style.color = "#ffd0d0";
-                hud.style.background = "rgba(48,0,0,0.88)";
-                hud.style.borderColor = "#8a2a2a";
-                hud.textContent = tip;
+        const LS_WS = "mywebrtc_ws_host";
+        const LS_PORT = "mywebrtc_ws_port";
+
+        function normalizeWsHost(raw) {
+            let h = String(raw || "").trim();
+            h = h.replace(/^wss?:\/\//i, "").replace(/^https?:\/\//i, "");
+            h = h.replace(/\/.*$/, "");
+            return h;
+        }
+
+        function showConnectPanel(msg) {
+            const panel = document.getElementById("connect-panel");
+            const status = document.getElementById("connect-status");
+            const wsInput = document.getElementById("connect-ws");
+            const portInput = document.getElementById("connect-port");
+            if (!panel) {
+                return;
             }
-            log(tip.replace(/\n/g, " "), "error");
+            panel.classList.add("show");
+            panel.setAttribute("aria-hidden", "false");
+            try {
+                const savedHost = localStorage.getItem(LS_WS) || "";
+                const savedPort = localStorage.getItem(LS_PORT) || "443";
+                if (wsInput && !wsInput.value) {
+                    wsInput.value = savedHost;
+                }
+                if (portInput && portInput.value === "443" && savedPort) {
+                    portInput.value = savedPort;
+                }
+            } catch (e) {}
+            if (status) {
+                status.className = "";
+                status.textContent = msg || "";
+            }
+            if (wsInput) {
+                setTimeout(() => wsInput.focus(), 50);
+            }
+        }
+
+        function hideConnectPanel() {
+            const panel = document.getElementById("connect-panel");
+            if (!panel) {
+                return;
+            }
+            panel.classList.remove("show");
+            panel.setAttribute("aria-hidden", "true");
+        }
+
+        function beginWatch(host, port, { persist = true, rewriteUrl = true } = {}) {
+            const h = normalizeWsHost(host);
+            const p = String(port || "443").trim() || "443";
+            if (!h) {
+                showConnectPanel("請填 Signaling Host（例如 xxx.trycloudflare.com）");
+                return false;
+            }
+            if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) && window.location.protocol === "https:") {
+                showConnectPanel(
+                    "GitHub Pages 是 HTTPS，不能直連區網 IP 的 ws://。\n" +
+                    "請填 cloudflared tunnel 主機，或改開本機 QR：http://你的TD_IP:5757/?port=321"
+                );
+                return false;
+            }
+            wsHost = h;
+            wsPort = p;
+            if (persist) {
+                try {
+                    localStorage.setItem(LS_WS, h);
+                    localStorage.setItem(LS_PORT, p);
+                } catch (e) {}
+            }
+            if (rewriteUrl) {
+                const u = new URL(window.location.href);
+                u.searchParams.set("ws", h);
+                u.searchParams.set("port", p);
+                history.replaceState(null, "", u.toString());
+            }
+            hideConnectPanel();
+            const status = document.getElementById("connect-status");
+            if (status) {
+                status.className = "ok";
+                status.textContent = `連接 ${h}:${p}…`;
+            }
+            connect();
+            setTimeout(() => {
+                tryEnterFullscreen();
+            }, 500);
+            return true;
+        }
+
+        function wireConnectPanel() {
+            const go = document.getElementById("connect-go");
+            const wsInput = document.getElementById("connect-ws");
+            const portInput = document.getElementById("connect-port");
+            if (!go) {
+                return;
+            }
+            const submit = () => {
+                beginWatch(wsInput && wsInput.value, portInput && portInput.value);
+            };
+            go.addEventListener("click", submit);
+            [wsInput, portInput].forEach((el) => {
+                if (!el) {
+                    return;
+                }
+                el.addEventListener("keydown", (ev) => {
+                    if (ev.key === "Enter") {
+                        submit();
+                    }
+                });
+            });
         }
 
         function start() {
@@ -1244,19 +1456,40 @@
             }
             const wsParam = (urlParams.get("ws") || "").trim();
             const onGithubPages = /\.github\.io$/i.test(window.location.hostname);
-            if (onGithubPages && !wsParam) {
-                showPagesWsHint();
+
+            // 本機 TD WebServer：hostname 即機器，port 用 ?port= 或預設
+            if (!onGithubPages) {
+                wsHost = wsParam || window.location.hostname;
+                wsPort = urlParams.get("port") || defaultPort;
+                connect();
+                setTimeout(() => {
+                    tryEnterFullscreen();
+                }, 500);
                 return;
             }
 
-            wsHost = wsParam || window.location.hostname;
-            wsPort = urlParams.get("port") || (onGithubPages ? 443 : defaultPort);
+            // GitHub Pages：收畫面是主流程，缺 ws 就跳出連接面板（可記住上次）
+            if (wsParam) {
+                beginWatch(wsParam, urlParams.get("port") || 443, {
+                    persist: true,
+                    rewriteUrl: false
+                });
+                return;
+            }
 
-            connect();
-
-            setTimeout(() => {
-                tryEnterFullscreen();
-            }, 500);
+            let saved = "";
+            try {
+                saved = localStorage.getItem(LS_WS) || "";
+            } catch (e) {}
+            if (saved) {
+                // 有紀錄先自動連；失敗使用者可改
+                beginWatch(saved, localStorage.getItem(LS_PORT) || 443, {
+                    persist: false,
+                    rewriteUrl: true
+                });
+                return;
+            }
+            showConnectPanel("先連 Signaling，才能收到 TouchDesigner 畫面。");
         }
 
         function silenceMediaBeforeTeardown() {
@@ -1461,6 +1694,8 @@
         };
 
             document.addEventListener("DOMContentLoaded", () => {
+            wireConnectPanel();
+
             const tdSignalHud = document.getElementById("td-signal-hud");
             if (tdSignalHud && signalHudEnabled) {
                 tdSignalHud.hidden = false;
