@@ -1,0 +1,1617 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qin WebRTC Fullscreen</title>
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <style>
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background: #000;
+            overflow: hidden;
+            caret-color: transparent;
+        }
+
+        #preview-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            min-height: 132px;
+            background: #0b0b0b;
+            border-bottom: 1px solid #1f1f1f;
+            z-index: 50;
+            display: none;
+            user-select: none;
+        }
+
+        #preview-strip {
+            min-height: 132px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            align-content: flex-start;
+            flex-wrap: wrap;
+            padding: 10px 12px;
+            overflow-x: hidden;
+            overflow-y: auto;
+            box-sizing: border-box;
+        }
+
+        .preview-card {
+            flex: 1 1 180px;
+            min-width: 110px;
+            max-width: 100%;
+            aspect-ratio: 16 / 9;
+            height: auto;
+            border: 1px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+            color: #d0d0d0;
+            text-decoration: none;
+            position: relative;
+            outline: none;
+        }
+
+        .preview-card:focus,
+        .preview-card:focus-visible,
+        iframe:focus,
+        iframe:focus-visible {
+            outline: none;
+        }
+
+        .preview-card iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            background: #000;
+            object-fit: fill;
+        }
+
+        .preview-card-label {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 22px;
+            line-height: 22px;
+            background: rgba(0, 0, 0, 0.75);
+            font-size: 12px;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            padding: 0 6px;
+            box-sizing: border-box;
+        }
+
+        #fullscreen-container {
+            width: 100vw;
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background: #000;
+            overflow: hidden;
+        }
+
+        #remoteVideo {
+            width: 100%;
+            height: 100%;
+            display: block;
+            background: #000;
+            object-fit: fill;
+            transform: scaleX(-1);
+            /* 畫面一律走 canvas；video 只當取樣源，斷線才不會黑 */
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #freezeFrameCanvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+            background: #111;
+            z-index: 10;
+            object-fit: fill;
+        }
+
+        #td-signal-hud {
+            position: fixed;
+            left: 8px;
+            bottom: 8px;
+            max-width: min(96vw, 520px);
+            max-height: 38vh;
+            overflow: auto;
+            z-index: 120;
+            padding: 8px 10px;
+            font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            color: #c8f0c8;
+            background: rgba(0, 24, 0, 0.82);
+            border: 1px solid #2a6a2a;
+            border-radius: 6px;
+            pointer-events: none;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        #td-signal-hud kbd {
+            color: #9fdf9f;
+        }
+
+        #osc-hud {
+            position: fixed;
+            right: 8px;
+            bottom: 8px;
+            z-index: 121;
+            max-width: min(92vw, 280px);
+            padding: 8px 10px;
+            border-radius: 6px;
+            background: rgba(0, 12, 28, 0.82);
+            color: #d0e8ff;
+            font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            border: 1px solid #2a4a8a;
+            white-space: pre-wrap;
+            pointer-events: none;
+        }
+
+        #osc-enable-btn {
+            position: fixed;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            z-index: 122;
+            padding: 12px 18px;
+            border: none;
+            border-radius: 999px;
+            background: #3d7eff;
+            color: #fff;
+            font: 14px/1.2 "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+            letter-spacing: 0.04em;
+            cursor: pointer;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+        }
+
+        #osc-enable-btn[hidden] {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <header id="preview-header">
+        <div id="preview-strip"></div>
+    </header>
+    <div id="fullscreen-container">
+        <video id="remoteVideo" playsinline autoplay muted></video>
+        <canvas id="freezeFrameCanvas"></canvas>
+    </div>
+    <div id="td-signal-hud" hidden><kbd>tdsignal</kbd> 等待 JSON…</div>
+    <div id="osc-hud" hidden>OSC 待命</div>
+    <button id="osc-enable-btn" type="button" hidden>啟用姿態感測 → OSC</button>
+
+    <script>
+        const defaultPort = 450;
+        const remoteVideo = document.getElementById("remoteVideo");
+        const freezeFrameCanvas = document.getElementById("freezeFrameCanvas");
+        const freezeCtx = freezeFrameCanvas.getContext("2d", { alpha: false });
+        const fullscreenContainer = document.getElementById("fullscreen-container");
+        const previewHeader = document.getElementById("preview-header");
+        const previewStrip = document.getElementById("preview-strip");
+
+        let signalingClient = null;
+        let webRTCConnection = null;
+        let myId = null;
+        let initialClientListReceived = false;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        // TD 關檔 / about:blank 時設 true，擋掉重連迴圈拖死 CEF
+        window.__tdShuttingDown = false;
+        let isConnecting = false;
+        let lastConnectAttemptAt = 0;
+        let wsHost = "";
+        let wsPort = defaultPort;
+        let connectWatchdogTimer = null;
+        let mediaWatchdogTimer = null;
+        let lastTrackAt = 0;
+        let hasFrozenFrame = false;
+        let lastSnapshotAt = 0;
+        let snapshotIntervalTimer = null;
+        let frameCaptureLoopActive = false;
+
+        const reconnectConfig = {
+            // 已停用自動重連（避免 currentClients 暴增）
+            retryDelaysMs: [],
+            minConnectIntervalMs: 0,
+            maxAttempts: 0
+        };
+        const watchdogConfig = {
+            connectTimeoutMs: 8000,
+            noVideoTimeoutMs: 8000
+        };
+        const urlParams = new URLSearchParams(window.location.search);
+        const isThumbnailMode = urlParams.get("thumb") === "1";
+        const onGithubPagesEarly = /\.github\.io$/i.test(window.location.hostname);
+        // GH Pages /MyWebRTC/ 不是 TD 總覽頁；總覽僅本機 WebServer root
+        const isRootOverviewPage =
+            !onGithubPagesEarly &&
+            window.location.pathname === "/" &&
+            !urlParams.get("port") &&
+            !urlParams.get("ws");
+        const shouldAllowFullscreen = !isThumbnailMode && !isRootOverviewPage;
+        // ?osc=0 關閉；預設開（thumb/overview 除外）
+        const oscBridgeEnabled = urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage;
+        const previewScanFrom = Number(urlParams.get("thumbFrom") || 301);
+        const previewScanTo = Number(urlParams.get("thumbTo") || 0);
+        const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
+        const previewMissStop = Math.max(5, Number(urlParams.get("thumbMissStop") || 30));
+        const previewHardMax = Math.max(previewScanFrom, Number(urlParams.get("thumbMax") || 2000));
+        const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || 5000);
+        const signalPollMs = Number(urlParams.get("signalPollMs") ?? 250);
+        // 預設不顯示 JSON 浮層；除錯時網址加 ?signalHud=1
+        const signalHudEnabled = urlParams.get("signalHud") === "1" && !isThumbnailMode;
+        // TD DataChannel 高頻 JSON 會塞爆主執行緒，易與影片解碼互搶造成卡頓；加 ?tdDcCoalesce=1 改為每幀最多派送一次（取最新一筆）
+        const tdDcCoalesce = urlParams.get("tdDcCoalesce") === "1";
+        let previewRefreshTimer = null;
+        let lastRenderedPreviewKey = "";
+        let tdSignalTimer = null;
+        let lastTdSignalSeq = -1;
+        let pendingTdSignalFromDc = null;
+        let tdSignalDcRafId = null;
+        let linkBeatTimer = null;
+        let linkSeq = 0;
+        let oscDataChannel = null;
+        let oscSeq = 0;
+        let oscRafId = null;
+        let oscSensorsLive = false;
+        let latestOrient = null;
+        let latestMotion = null;
+        let lastOscHudAt = 0;
+
+        function linkStatusName() {
+            const port = (urlParams.get("port") || "").trim();
+            if (port && /^[0-9]{1,6}$/.test(port)) {
+                return `td_link_${port}.json`;
+            }
+            return "td_link.json";
+        }
+
+        function collectLinkState() {
+            const sigOpen = signalingClient?.webSocket?.readyState === WebSocket.OPEN;
+            const pc = webRTCConnection?.peerConnection || null;
+            const pcState = pc ? String(pc.connectionState || "") : "none";
+            const iceState = pc ? String(pc.iceConnectionState || "") : "none";
+            const live = hasLiveVideo();
+            // 斷線判定：不看畫面像素，只看連線狀態
+            const ok = Boolean(
+                sigOpen &&
+                live &&
+                (pcState === "connected" || pcState === "connecting")
+            );
+            return {
+                ok: ok ? 1 : 0,
+                signaling: sigOpen ? 1 : 0,
+                live: live ? 1 : 0,
+                pc: pcState,
+                ice: iceState,
+                seq: ++linkSeq,
+                t: Date.now(),
+                port: urlParams.get("port") || "",
+            };
+        }
+
+        async function postLinkState(extra) {
+            if (isThumbnailMode || isRootOverviewPage) {
+                return;
+            }
+            const body = Object.assign(collectLinkState(), extra || {});
+            try {
+                const u = new URL(linkStatusName(), window.location.href);
+                await fetch(u.toString(), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                    cache: "no-store",
+                    keepalive: true,
+                });
+            } catch (e) {
+                // ignore — Server 端超時就當斷線
+            }
+        }
+
+        function startLinkHeartbeat() {
+            if (isThumbnailMode || isRootOverviewPage) {
+                return;
+            }
+            if (linkBeatTimer) {
+                clearInterval(linkBeatTimer);
+            }
+            postLinkState();
+            linkBeatTimer = setInterval(() => {
+                if (window.__tdShuttingDown) {
+                    return;
+                }
+                postLinkState();
+            }, 500);
+        }
+
+        function stopLinkHeartbeat(finalDead) {
+            if (linkBeatTimer) {
+                clearInterval(linkBeatTimer);
+                linkBeatTimer = null;
+            }
+            if (finalDead) {
+                postLinkState({ ok: 0, live: 0, dead: 1 });
+            }
+        }
+
+        function log(msg, type = "info") {
+            const prefix = type.toUpperCase();
+            console.log(`[${prefix}] ${msg}`);
+        }
+
+        function dispatchTdSignalFromDc(data) {
+            const seq = Number(data.seq);
+            if (Number.isFinite(seq)) {
+                if (seq === lastTdSignalSeq) {
+                    return;
+                }
+                lastTdSignalSeq = seq;
+            }
+            window.dispatchEvent(new CustomEvent("tdsignal", { detail: data }));
+        }
+
+        function flushPendingTdSignalFromDc() {
+            tdSignalDcRafId = null;
+            if (pendingTdSignalFromDc === null) {
+                return;
+            }
+            const data = pendingTdSignalFromDc;
+            pendingTdSignalFromDc = null;
+            dispatchTdSignalFromDc(data);
+        }
+
+        /** TD 端用 Outgoing DataChannel 送 UTF-8 JSON 字串時，由此轉成與 signal.json 相同的 tdsignal 事件 */
+        function wireDataChannelToTdSignal(channel) {
+            channel.onmessage = (ev) => {
+                if (typeof ev.data !== "string") {
+                    return;
+                }
+                const raw = ev.data.trim();
+                if (!raw || raw[0] !== "{") {
+                    return;
+                }
+                let data;
+                try {
+                    data = JSON.parse(raw);
+                } catch (_) {
+                    return;
+                }
+                if (tdDcCoalesce) {
+                    const seq = Number(data.seq);
+                    if (Number.isFinite(seq) && seq === lastTdSignalSeq) {
+                        return;
+                    }
+                    pendingTdSignalFromDc = data;
+                    if (tdSignalDcRafId === null) {
+                        tdSignalDcRafId = requestAnimationFrame(flushPendingTdSignalFromDc);
+                    }
+                    return;
+                }
+                dispatchTdSignalFromDc(data);
+            };
+        }
+
+        function setOscHud(text) {
+            const el = document.getElementById("osc-hud");
+            if (!el || !oscBridgeEnabled) {
+                return;
+            }
+            el.hidden = false;
+            el.textContent = text;
+        }
+
+        function flushOscPayload() {
+            oscRafId = null;
+            if (!oscBridgeEnabled || !oscDataChannel || oscDataChannel.readyState !== "open") {
+                return;
+            }
+            if (!latestOrient && !latestMotion) {
+                return;
+            }
+            const payload = {
+                t: Date.now(),
+                seq: ++oscSeq,
+                orient: latestOrient,
+                accel: latestMotion ? latestMotion.accel : null,
+                accelG: latestMotion ? latestMotion.accelG : null,
+                rotRate: latestMotion ? latestMotion.rotRate : null
+            };
+            try {
+                oscDataChannel.send(JSON.stringify(payload));
+            } catch (e) {
+                return;
+            }
+            const now = Date.now();
+            if (now - lastOscHudAt > 250) {
+                lastOscHudAt = now;
+                const o = latestOrient || {};
+                setOscHud(
+                    `OSC↑ seq=${payload.seq}\n` +
+                    `α=${Number(o.alpha || 0).toFixed(1)} β=${Number(o.beta || 0).toFixed(1)} γ=${Number(o.gamma || 0).toFixed(1)}`
+                );
+            }
+        }
+
+        function queueOscSend() {
+            if (!oscBridgeEnabled) {
+                return;
+            }
+            if (oscRafId !== null) {
+                return;
+            }
+            oscRafId = requestAnimationFrame(flushOscPayload);
+        }
+
+        function onDeviceOrientation(ev) {
+            latestOrient = {
+                alpha: ev.alpha == null ? 0 : ev.alpha,
+                beta: ev.beta == null ? 0 : ev.beta,
+                gamma: ev.gamma == null ? 0 : ev.gamma,
+                absolute: Boolean(ev.absolute)
+            };
+            queueOscSend();
+        }
+
+        function onDeviceMotion(ev) {
+            const a = ev.acceleration || {};
+            const ag = ev.accelerationIncludingGravity || {};
+            const rr = ev.rotationRate || {};
+            latestMotion = {
+                accel: { x: a.x || 0, y: a.y || 0, z: a.z || 0 },
+                accelG: { x: ag.x || 0, y: ag.y || 0, z: ag.z || 0 },
+                rotRate: { alpha: rr.alpha || 0, beta: rr.beta || 0, gamma: rr.gamma || 0 }
+            };
+            queueOscSend();
+        }
+
+        async function enableMotionSensors() {
+            if (!oscBridgeEnabled || oscSensorsLive) {
+                return true;
+            }
+            try {
+                if (
+                    typeof DeviceOrientationEvent !== "undefined" &&
+                    typeof DeviceOrientationEvent.requestPermission === "function"
+                ) {
+                    const st = await DeviceOrientationEvent.requestPermission();
+                    if (st !== "granted") {
+                        setOscHud("姿態權限被拒（Orientation）");
+                        return false;
+                    }
+                }
+                if (
+                    typeof DeviceMotionEvent !== "undefined" &&
+                    typeof DeviceMotionEvent.requestPermission === "function"
+                ) {
+                    try {
+                        await DeviceMotionEvent.requestPermission();
+                    } catch (e) {}
+                }
+            } catch (err) {
+                setOscHud("姿態權限失敗：" + (err && err.message ? err.message : err));
+                return false;
+            }
+            window.addEventListener("deviceorientation", onDeviceOrientation, true);
+            window.addEventListener("devicemotion", onDeviceMotion, true);
+            oscSensorsLive = true;
+            const btn = document.getElementById("osc-enable-btn");
+            if (btn) {
+                btn.hidden = true;
+            }
+            setOscHud("姿態感測已開，等待 DataChannel…");
+            log("DeviceOrientation / DeviceMotion 已啟用", "success");
+            return true;
+        }
+
+        function needsMotionPermissionPrompt() {
+            return (
+                typeof DeviceOrientationEvent !== "undefined" &&
+                typeof DeviceOrientationEvent.requestPermission === "function"
+            );
+        }
+
+        function wireOscDataChannel(channel) {
+            oscDataChannel = channel;
+            channel.onopen = () => {
+                log("DataChannel 已開啟: OscData", "success");
+                setOscHud(oscSensorsLive ? "OscData open — 推送中" : "OscData open — 請啟用姿態");
+                if (oscSensorsLive) {
+                    queueOscSend();
+                }
+            };
+            channel.onclose = () => {
+                if (oscDataChannel === channel) {
+                    oscDataChannel = null;
+                }
+                setOscHud("OscData closed");
+            };
+            channel.onerror = () => {
+                log("OscData DataChannel error", "error");
+            };
+        }
+
+        function tryEnterFullscreen() {
+            if (!shouldAllowFullscreen) {
+                return;
+            }
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                return;
+            }
+
+            const el = fullscreenContainer;
+            if (el.requestFullscreen) {
+                el.requestFullscreen().catch(() => {});
+            } else if (el.webkitRequestFullscreen) {
+                el.webkitRequestFullscreen().catch(() => {});
+            } else if (remoteVideo.webkitEnterFullscreen) {
+                remoteVideo.webkitEnterFullscreen().catch(() => {});
+            }
+        }
+
+        function captureFreezeFrame() {
+            if (isThumbnailMode) {
+                return false;
+            }
+            if (!remoteVideo || remoteVideo.videoWidth <= 0 || remoteVideo.videoHeight <= 0) {
+                return false;
+            }
+            if (
+                freezeFrameCanvas.width !== remoteVideo.videoWidth ||
+                freezeFrameCanvas.height !== remoteVideo.videoHeight
+            ) {
+                freezeFrameCanvas.width = remoteVideo.videoWidth;
+                freezeFrameCanvas.height = remoteVideo.videoHeight;
+            }
+            freezeCtx.save();
+            freezeCtx.translate(freezeFrameCanvas.width, 0);
+            freezeCtx.scale(-1, 1);
+            freezeCtx.drawImage(remoteVideo, 0, 0, freezeFrameCanvas.width, freezeFrameCanvas.height);
+            freezeCtx.restore();
+            hasFrozenFrame = true;
+            lastSnapshotAt = Date.now();
+            return true;
+        }
+
+        function stopSnapshotLoop() {
+            frameCaptureLoopActive = false;
+            if (snapshotIntervalTimer) {
+                clearInterval(snapshotIntervalTimer);
+                snapshotIntervalTimer = null;
+            }
+        }
+
+        function showLiveVideo() {
+            // 正常播放：直接看 <video>，不要靠 canvas 取樣（CEF rvfc 會停 → 假停格）
+            if (isThumbnailMode) {
+                return;
+            }
+            remoteVideo.style.opacity = "1";
+            freezeFrameCanvas.style.display = "none";
+        }
+
+        function startSnapshotLoop() {
+            if (isThumbnailMode) {
+                return;
+            }
+            // 備援：背景偶爾抓一幀給真斷線時停格用；顯示仍以 live video 為主
+            showLiveVideo();
+            stopSnapshotLoop();
+            frameCaptureLoopActive = true;
+            snapshotIntervalTimer = setInterval(() => {
+                if (!frameCaptureLoopActive) {
+                    return;
+                }
+                if (hasLiveVideo() && !remoteVideo.paused) {
+                    captureFreezeFrame();
+                }
+            }, 500);
+        }
+
+        function showFreezeFrame() {
+            if (isThumbnailMode) {
+                return;
+            }
+            captureFreezeFrame();
+            freezeFrameCanvas.style.display = "block";
+            remoteVideo.style.opacity = "0";
+        }
+
+        function hideFreezeFrame() {
+            showLiveVideo();
+        }
+
+        function renderPreviewHeaderByPorts(ports) {
+            if (!ports.length) {
+                previewStrip.innerHTML = "<div style=\"color:#8a8a8a;font-size:13px;padding:0 4px;\">尚未偵測到可用推送畫面（可用 ?thumbFrom=301&thumbTo=800 或動態掃描參數 ?thumbChunk=40&thumbMissStop=30）</div>";
+                previewHeader.style.display = "block";
+                fullscreenContainer.style.top = "0";
+                fullscreenContainer.style.height = "100vh";
+                lastRenderedPreviewKey = "";
+                return;
+            }
+
+            const portsKey = ports.join(",");
+            if (portsKey === lastRenderedPreviewKey) {
+                return;
+            }
+            lastRenderedPreviewKey = portsKey;
+
+            const host = window.location.hostname;
+            previewStrip.innerHTML = "";
+            // ★ 不用 iframe 載 ?thumb=1：每個 iframe 都會連 Signaling + 失敗重連，
+            //   currentClients 會出現一堆同 IP 連線（例如 9–10）一直開關。
+            for (const port of ports) {
+                const card = document.createElement("a");
+                card.className = "preview-card";
+                card.href = `/?port=${encodeURIComponent(port)}`;
+                card.target = "_self";
+                card.style.display = "flex";
+                card.style.alignItems = "center";
+                card.style.justifyContent = "center";
+                card.style.fontSize = "13px";
+                card.style.color = "#c8c8c8";
+                card.textContent = `${host}:${port}`;
+                previewStrip.appendChild(card);
+            }
+
+            previewHeader.style.display = "block";
+            requestAnimationFrame(() => {
+                const headerHeight = Math.max(132, previewHeader.offsetHeight || 132);
+                fullscreenContainer.style.top = `${headerHeight}px`;
+                fullscreenContainer.style.height = `calc(100vh - ${headerHeight}px)`;
+            });
+        }
+
+        async function probeHttpPort(host, port, timeoutMs = 900) {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), timeoutMs);
+            try {
+                // no-cors 模式：只要能連到該 port，就會 resolve（回傳 opaque response）
+                await fetch(`http://${host}:${port}/`, { mode: "no-cors", cache: "no-store", signal: controller.signal });
+                return true;
+            } catch {
+                return false;
+            } finally {
+                clearTimeout(timeout);
+            }
+        }
+
+        async function discoverOpenPreviewPorts() {
+            const host = window.location.hostname;
+            const foundPorts = [];
+            const scanBatch = async (from, to) => {
+                const tasks = [];
+                for (let port = from; port <= to; port += 1) {
+                    tasks.push(probeHttpPort(host, port).then((ok) => (ok ? port : null)));
+                }
+                const results = await Promise.all(tasks);
+                return results.filter((p) => p !== null);
+            };
+
+            // 指定 thumbTo 時，掃固定範圍。
+            if (previewScanTo > 0) {
+                const from = Math.max(1, Math.min(previewScanFrom, previewScanTo));
+                const to = Math.max(previewScanFrom, previewScanTo);
+                return await scanBatch(from, to);
+            }
+
+            // 不指定 thumbTo 時，動態向上掃描直到連續未命中達到門檻。
+            let currentFrom = Math.max(1, previewScanFrom);
+            let consecutiveMisses = 0;
+
+            while (currentFrom <= previewHardMax && consecutiveMisses < previewMissStop) {
+                const currentTo = Math.min(currentFrom + previewScanChunk - 1, previewHardMax);
+                const batchFound = await scanBatch(currentFrom, currentTo);
+                if (batchFound.length) {
+                    foundPorts.push(...batchFound);
+                    consecutiveMisses = 0;
+                } else {
+                    consecutiveMisses += currentTo - currentFrom + 1;
+                }
+                currentFrom = currentTo + 1;
+            }
+
+            return foundPorts;
+        }
+
+        async function buildPreviewHeader() {
+            if (isThumbnailMode) {
+                return;
+            }
+            let thumbsRaw = (urlParams.get("thumbPorts") || "").trim();
+            if (thumbsRaw) {
+                const manualPorts = thumbsRaw
+                    .split(",")
+                    .map((p) => p.trim())
+                    .filter((p) => /^\d+$/.test(p));
+                renderPreviewHeaderByPorts(manualPorts);
+                return;
+            }
+
+            if (!isRootOverviewPage) {
+                return;
+            }
+
+            const autoPorts = await discoverOpenPreviewPorts();
+            renderPreviewHeaderByPorts(autoPorts);
+        }
+
+        class SignalingClient {
+            constructor(url, port, onMessage, onOpen, onClose, onError) {
+                this.url = url;
+                this.port = port;
+                this.onMessage = onMessage;
+                this.onOpen = onOpen;
+                this.onClose = onClose;
+                this.onError = onError;
+                this.webSocket = null;
+                this.properties = {};
+                this.id = null;
+                this.webRTCConnection = null;
+            }
+
+            setWebRTCConnection(connection) {
+                this.webRTCConnection = connection;
+            }
+
+            open() {
+                if (
+                    this.webSocket &&
+                    (this.webSocket.readyState === WebSocket.OPEN || this.webSocket.readyState === WebSocket.CONNECTING)
+                ) {
+                    return;
+                }
+
+                // GitHub Pages 為 HTTPS：只能連 wss，否則 mixed content 直接被擋
+                const pageIsSecure = window.location.protocol === "https:";
+                const forceWss =
+                    pageIsSecure ||
+                    this.url.startsWith("https") ||
+                    this.url.startsWith("wss");
+                const protocol = forceWss ? "wss" : "ws";
+                let host = this.url
+                    .replace(/^ws:\/\//, "")
+                    .replace(/^wss:\/\//, "")
+                    .replace(/^https:\/\//, "")
+                    .replace(/^http:\/\//, "");
+                // 允許 ?ws=host:443 省略 port 參數
+                let port = this.port;
+                const hostPortMatch = host.match(/^([^:/]+)(?::(\d+))?$/);
+                if (hostPortMatch) {
+                    host = hostPortMatch[1];
+                    if (hostPortMatch[2]) {
+                        port = hostPortMatch[2];
+                    }
+                }
+                const fullUrl = `${protocol}://${host}:${port}`;
+
+                log(`連接 Signaling: ${fullUrl}`);
+                this._intentionalClose = false;
+                this.webSocket = new WebSocket(fullUrl);
+
+                this.webSocket.onopen = () => {
+                    this.onOpen();
+                };
+
+                this.webSocket.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        if (message.signalingType === "ClientEntered") {
+                            this.id = message.content?.self?.id;
+                            this.properties = message.content?.self?.properties || {};
+                            myId = this.id;
+                        }
+                        this.onMessage(message);
+                    } catch (e) {
+                        log(`Signaling 訊息解析失敗: ${e.message}`, "error");
+                    }
+                };
+
+                this.webSocket.onclose = () => {
+                    initialClientListReceived = false;
+                    // 主動 teardown 關的，不要觸發重連（否則會連環開新 WS）
+                    if (this._intentionalClose) {
+                        return;
+                    }
+                    this.onClose();
+                };
+
+                this.webSocket.onerror = () => {
+                    if (this._intentionalClose) {
+                        return;
+                    }
+                    log("WebSocket 錯誤，請檢查 IP/Port", "error");
+                    this.onError();
+                };
+            }
+
+            send(messageString) {
+                if (this.webSocket && this.webSocket.readyState === WebSocket.OPEN) {
+                    this.webSocket.send(messageString);
+                }
+            }
+
+            close() {
+                if (!this.webSocket) {
+                    return;
+                }
+                this._intentionalClose = true;
+                try {
+                    this.webSocket.onopen = null;
+                    this.webSocket.onmessage = null;
+                    this.webSocket.onclose = null;
+                    this.webSocket.onerror = null;
+                    this.webSocket.close();
+                } catch (error) {
+                    log(`關閉 WebSocket 失敗: ${error.message}`, "error");
+                }
+                this.webSocket = null;
+            }
+
+            onWebSocketMessageReceived(message) {
+                switch (message.signalingType) {
+                    case "Clients": {
+                        const clients = message.content?.clients || [];
+                        if (!initialClientListReceived && clients.length > 0) {
+                            initialClientListReceived = true;
+                            const firstClient = clients.find((c) => c.id !== myId);
+                            if (firstClient && !this.webRTCConnection?.peerConnection) {
+                                this.webRTCConnection.onCallStart(firstClient.address, firstClient.properties);
+                            }
+                        }
+                        break;
+                    }
+                    case "ClientEnter":
+                        if (this.webSocket && this.webSocket.readyState === WebSocket.OPEN) {
+                            this.send(JSON.stringify({ signalingType: "GetClients" }));
+                        }
+                        break;
+                    case "ClientEntered":
+                        this.id = message.content?.self?.id;
+                        this.properties = message.content?.self?.properties || {};
+                        myId = this.id;
+                        break;
+                    default:
+                        if (this.webRTCConnection && ["Offer", "Answer", "Ice"].includes(message.signalingType)) {
+                            this.webRTCConnection.onMessageReceived(message);
+                        }
+                        break;
+                }
+            }
+        }
+
+        class WebRTCConnection {
+            constructor(signalingClientInstance) {
+                this.signalingClient = signalingClientInstance;
+                this.signalingClient.setWebRTCConnection(this);
+                this.peerConnection = null;
+                this.makingOffer = false;
+                this.polite = false;
+                this.target = null;
+            }
+
+            setupDataChannels() {
+                if (isThumbnailMode) {
+                    return;
+                }
+                try {
+                    this.peerConnection.createDataChannel("MouseData");
+                    this.peerConnection.createDataChannel("KeyboardData");
+                    if (oscBridgeEnabled) {
+                        wireOscDataChannel(this.peerConnection.createDataChannel("OscData"));
+                    }
+                } catch (error) {
+                    log(`資料通道建立失敗: ${error.message}`, "error");
+                }
+            }
+
+            createPeerConnection() {
+                this.peerConnection = new RTCPeerConnection({
+                    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+                });
+
+                this.peerConnection.onicecandidate = ({ candidate }) => {
+                    if (candidate && this.target) {
+                        this.sendSignalingMessage("Ice", {
+                            sdpCandidate: candidate.candidate,
+                            sdpMLineIndex: candidate.sdpMLineIndex,
+                            sdpMid: candidate.sdpMid
+                        });
+                    }
+                };
+
+                this.peerConnection.ontrack = ({ track, streams }) => {
+                    const stream = (streams && streams[0]) || null;
+                    if (!stream) {
+                        return;
+                    }
+                    // 影音都掛上同一個 video 元素（避免只吃到 video track）
+                    if (!remoteVideo.srcObject) {
+                        remoteVideo.srcObject = stream;
+                    } else {
+                        const cur = remoteVideo.srcObject;
+                        stream.getTracks().forEach((t) => {
+                            if (!cur.getTracks().some((x) => x.id === t.id)) {
+                                try {
+                                    cur.addTrack(t);
+                                } catch (e) {}
+                            }
+                        });
+                    }
+                    if (track.kind === "video") {
+                        lastTrackAt = Date.now();
+                        startSnapshotLoop();
+                        track.onended = () => {
+                            captureFreezeFrame();
+                            showFreezeFrame();
+                            // 影軌結束：只停格，不要拆整條 Signaling（會刷 currentClients）
+                        };
+                    }
+                    if (track.kind === "audio") {
+                        track.onended = () => {
+                            // 音軌死掉立刻靜音，避免卡住最後 sample 爆音
+                            silenceMediaBeforeTeardown();
+                        };
+                        track.onmute = () => {
+                            try {
+                                remoteVideo.muted = true;
+                                remoteVideo.volume = 0;
+                            } catch (e) {}
+                        };
+                    }
+                    const playMedia = () => {
+                        remoteVideo.muted = false;
+                        remoteVideo.volume = 1;
+                        const kick = () => {
+                            remoteVideo.muted = false;
+                            remoteVideo.volume = 1;
+                            showLiveVideo();
+                            if (track.kind === "video") {
+                                startSnapshotLoop();
+                            }
+                        };
+                        const p = remoteVideo.play();
+                        if (p && p.then) {
+                            p.then(kick).catch(() => {
+                                remoteVideo.play().then(kick).catch(kick);
+                            });
+                        } else {
+                            kick();
+                        }
+                    };
+                    if (track.kind === "video" || track.kind === "audio") {
+                        playMedia();
+                    }
+                };
+
+                this.peerConnection.onnegotiationneeded = async () => {
+                    if (!this.target) {
+                        return;
+                    }
+                    try {
+                        this.makingOffer = true;
+                        await this.peerConnection.setLocalDescription();
+                        this.sendSignalingMessage("Offer", { sdp: this.peerConnection.localDescription.sdp });
+                    } catch (err) {
+                        log(`Negotiation 失敗: ${err.message}`, "error");
+                    } finally {
+                        this.makingOffer = false;
+                    }
+                };
+
+                this.peerConnection.onconnectionstatechange = () => {
+                    if (!this.peerConnection) {
+                        return;
+                    }
+                    const state = this.peerConnection.connectionState;
+                    try {
+                        postLinkState({ pc: state });
+                    } catch (e) {}
+                    if (state === "failed" || state === "closed") {
+                        captureFreezeFrame();
+                        showFreezeFrame();
+                        try {
+                            postLinkState({ ok: 0, live: 0, pc: state });
+                        } catch (e) {}
+                        this.deletePeerConnection();
+                        // 不重連 Signaling
+                        log("PeerConnection " + state + " — no auto reconnect", "warn");
+                    } else if (state === "disconnected") {
+                        // ICE 短暫 disconnected：只記狀態，不要立刻停格/拆線
+                        try {
+                            postLinkState({ pc: state });
+                        } catch (e) {}
+                        const pc = this.peerConnection;
+                        setTimeout(() => {
+                            if (pc && pc.connectionState === "disconnected") {
+                                captureFreezeFrame();
+                                showFreezeFrame();
+                                try {
+                                    postLinkState({ ok: 0, live: 0, pc: state });
+                                } catch (e) {}
+                                this.deletePeerConnection();
+                                log("PeerConnection disconnected — no auto reconnect", "warn");
+                            } else if (pc && pc.connectionState === "connected") {
+                                showLiveVideo();
+                            }
+                        }, 3000);
+                    }
+                };
+
+                this.peerConnection.ondatachannel = (ev) => {
+                    const ch = ev.channel;
+                    log(`DataChannel 已連入: ${ch.label}`, "success");
+                    if (ch.label === "OscData") {
+                        wireOscDataChannel(ch);
+                        return;
+                    }
+                    wireDataChannelToTdSignal(ch);
+                };
+                this.peerConnection.addTransceiver("video", { direction: "recvonly" });
+                if (!isThumbnailMode) {
+                    this.peerConnection.addTransceiver("audio", { direction: "recvonly" });
+                    this.peerConnection.addTransceiver("video", { direction: "sendonly" });
+                }
+            }
+
+            deletePeerConnection() {
+                captureFreezeFrame();
+                showFreezeFrame();
+                // ★ 斷線先靜音再拆 track，否則 CEF/audiowebrender 會卡住最後一個 sample → 爆音
+                silenceMediaBeforeTeardown();
+                if (this.peerConnection) {
+                    try {
+                        this.peerConnection.close();
+                    } catch (error) {
+                        log(`關閉 PeerConnection 失敗: ${error.message}`, "error");
+                    }
+                    this.peerConnection = null;
+                }
+
+                if (remoteVideo.srcObject) {
+                    remoteVideo.srcObject.getTracks().forEach((track) => track.stop());
+                    remoteVideo.srcObject = null;
+                }
+                this.target = null;
+            }
+
+            onCallStart(targetAddress, targetProperties) {
+                if (this.peerConnection) {
+                    return;
+                }
+                this.target = targetAddress;
+                const myTimeJoined = this.signalingClient.properties.timeJoined || 0;
+                const targetTimeJoined = targetProperties.timeJoined || 0;
+                this.polite = myTimeJoined > targetTimeJoined;
+                this.createPeerConnection();
+                this.setupDataChannels();
+            }
+
+            async onMessageReceived(message) {
+                if (!message.content || (!this.target && message.signalingType !== "Offer")) {
+                    return;
+                }
+
+                if (!this.peerConnection && message.signalingType === "Offer") {
+                    this.polite = true;
+                    this.target = message.sender;
+                    this.createPeerConnection();
+                    this.setupDataChannels();
+                } else if (!this.peerConnection) {
+                    return;
+                }
+
+                try {
+                    if (message.signalingType === "Offer") {
+                        this.target = message.sender;
+                        const offerCollision = this.makingOffer || this.peerConnection.signalingState !== "stable";
+                        const ignoreOffer = !this.polite && offerCollision;
+                        if (ignoreOffer) {
+                            return;
+                        }
+                        await this.peerConnection.setRemoteDescription({ type: "offer", sdp: message.content.sdp });
+                        await this.peerConnection.setLocalDescription();
+                        this.sendSignalingMessage("Answer", { sdp: this.peerConnection.localDescription.sdp });
+                    } else if (message.signalingType === "Answer") {
+                        await this.peerConnection.setRemoteDescription({ type: "answer", sdp: message.content.sdp });
+                    } else if (message.signalingType === "Ice") {
+                        if (!message.content.sdpCandidate) {
+                            return;
+                        }
+                        const candidate = new RTCIceCandidate({
+                            candidate: message.content.sdpCandidate,
+                            sdpMLineIndex: message.content.sdpMLineIndex,
+                            sdpMid: message.content.sdpMid
+                        });
+                        await this.peerConnection.addIceCandidate(candidate);
+                    }
+                } catch (err) {
+                    log(`WebRTC 訊息處理失敗: ${err.message}`, "error");
+                }
+            }
+
+            sendSignalingMessage(type, content) {
+                if (!this.target) {
+                    return;
+                }
+                const message = {
+                    metadata: {
+                        apiVersion: "1.0.1",
+                        compVersion: "1.0.1",
+                        compOrigin: "WebRTC",
+                        projectName: "TDWebRTCWebDemo"
+                    },
+                    signalingType: type,
+                    sender: null,
+                    target: this.target,
+                    content
+                };
+                this.signalingClient.send(JSON.stringify(message));
+            }
+        }
+
+        function startTdSignalPolling() {
+            if (tdSignalTimer) {
+                clearInterval(tdSignalTimer);
+                tdSignalTimer = null;
+            }
+            if (!Number.isFinite(signalPollMs) || signalPollMs <= 0) {
+                return;
+            }
+            const tick = async () => {
+                if (window.__tdShuttingDown) {
+                    return;
+                }
+                const sigSlug = (urlParams.get("signalKey") || urlParams.get("sig") || "").trim();
+                const sigPort = (urlParams.get("port") || "").trim();
+                const slugOk = (s) => /^[a-zA-Z0-9_-]{1,64}$/.test(s);
+                let name = "signal.json";
+                if (sigSlug && slugOk(sigSlug)) {
+                    name = `signal_${sigSlug}.json`;
+                } else if (sigPort && slugOk(sigPort)) {
+                    name = `signal_${sigPort}.json`;
+                }
+                const u = new URL(name, window.location.href);
+                u.searchParams.set("_", String(Date.now()));
+                let res;
+                try {
+                    res = await fetch(u.toString(), { cache: "no-store" });
+                } catch {
+                    return;
+                }
+                if (res.status === 404) {
+                    return;
+                }
+                if (!res.ok) {
+                    return;
+                }
+                let data;
+                try {
+                    data = await res.json();
+                } catch {
+                    return;
+                }
+                const seq = Number(data.seq);
+                if (!Number.isFinite(seq) || seq === lastTdSignalSeq) {
+                    return;
+                }
+                lastTdSignalSeq = seq;
+                window.dispatchEvent(new CustomEvent("tdsignal", { detail: data }));
+            };
+            tick();
+            tdSignalTimer = setInterval(tick, Math.max(50, signalPollMs));
+        }
+
+        function showPagesWsHint() {
+            const hud = document.getElementById("td-signal-hud");
+            const tip =
+                "GitHub Pages 需指定公網 WSS signaling：\n" +
+                "?ws=你的tunnel主機&port=443\n" +
+                "例：?ws=xxxx.trycloudflare.com&port=443";
+            if (hud) {
+                hud.hidden = false;
+                hud.style.pointerEvents = "auto";
+                hud.style.color = "#ffd0d0";
+                hud.style.background = "rgba(48,0,0,0.88)";
+                hud.style.borderColor = "#8a2a2a";
+                hud.textContent = tip;
+            }
+            log(tip.replace(/\n/g, " "), "error");
+        }
+
+        function start() {
+            // thumb iframe / 總覽頁不進 Signaling（避免多客戶端互搶 + 重連抖動）
+            if (isThumbnailMode || isRootOverviewPage) {
+                log("thumb/overview: skip signaling connect");
+                return;
+            }
+            const wsParam = (urlParams.get("ws") || "").trim();
+            const onGithubPages = /\.github\.io$/i.test(window.location.hostname);
+            if (onGithubPages && !wsParam) {
+                showPagesWsHint();
+                return;
+            }
+
+            wsHost = wsParam || window.location.hostname;
+            wsPort = urlParams.get("port") || (onGithubPages ? 443 : defaultPort);
+
+            connect();
+
+            setTimeout(() => {
+                tryEnterFullscreen();
+            }, 500);
+        }
+
+        function silenceMediaBeforeTeardown() {
+            // 順序很重要：先 mute/volume=0 → disable audio tracks → 再 stop
+            try {
+                remoteVideo.muted = true;
+                remoteVideo.volume = 0;
+            } catch (e) {}
+            try {
+                remoteVideo.pause();
+            } catch (e) {}
+            const stream = remoteVideo.srcObject;
+            if (!stream) {
+                return;
+            }
+            try {
+                stream.getAudioTracks().forEach((t) => {
+                    try {
+                        t.enabled = false;
+                    } catch (e) {}
+                });
+            } catch (e) {}
+        }
+
+        function resetMediaView() {
+            // 停 snapshot 取樣，但保留 canvas 最後一幀（不要 load() 清畫面）
+            stopSnapshotLoop();
+            silenceMediaBeforeTeardown();
+            if (remoteVideo.srcObject) {
+                remoteVideo.srcObject.getTracks().forEach((track) => track.stop());
+                remoteVideo.srcObject = null;
+            }
+            // 刻意不 remoteVideo.load()，避免 CEF 整頁閃黑
+        }
+
+        function clearReconnectTimer() {
+            if (!reconnectTimer) {
+                return;
+            }
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+
+        function clearConnectWatchdog() {
+            if (!connectWatchdogTimer) {
+                return;
+            }
+            clearTimeout(connectWatchdogTimer);
+            connectWatchdogTimer = null;
+        }
+
+        function clearMediaWatchdog() {
+            if (!mediaWatchdogTimer) {
+                return;
+            }
+            clearInterval(mediaWatchdogTimer);
+            mediaWatchdogTimer = null;
+        }
+
+        function hasLiveVideo() {
+            return Boolean(
+                remoteVideo.srcObject &&
+                remoteVideo.srcObject.getVideoTracks().some((t) => t.readyState === "live")
+            );
+        }
+
+        function clearConnectLock() {
+            isConnecting = false;
+            clearReconnectTimer();
+            clearConnectWatchdog();
+        }
+        window.__tdClearConnectLock = clearConnectLock;
+
+        function startMediaWatchdog() {
+            clearMediaWatchdog();
+            mediaWatchdogTimer = setInterval(() => {
+                const connected = signalingClient?.webSocket?.readyState === WebSocket.OPEN;
+                if (!connected) {
+                    // 不自動重連
+                    return;
+                }
+
+                if (hasLiveVideo()) {
+                    lastTrackAt = Date.now();
+                    // 有 live track：確保顯示 live video，不要卡在停格層
+                    if (remoteVideo.style.opacity === "0" || freezeFrameCanvas.style.display === "block") {
+                        if (!remoteVideo.paused) {
+                            showLiveVideo();
+                        }
+                    }
+                    if (remoteVideo.paused) {
+                        remoteVideo.play().catch(() => {});
+                    }
+                    return;
+                }
+
+                // 已連 signaling 但沒 live track：只停格，不要亂拆連線
+                showFreezeFrame();
+            }, 1000);
+        }
+
+        function scheduleReconnect(reason) {
+            // ★ 完全停用自動重連
+            if (reason) {
+                log(`斷線不重連: ${reason}`, "warn");
+            }
+            return;
+        }
+
+        function teardownConnections() {
+            if (!isThumbnailMode) {
+                captureFreezeFrame();
+                showFreezeFrame();
+            }
+            clearConnectWatchdog();
+            clearMediaWatchdog();
+            if (webRTCConnection) {
+                webRTCConnection.deletePeerConnection();
+                webRTCConnection = null;
+            }
+            if (signalingClient) {
+                signalingClient.close();
+                signalingClient = null;
+            }
+            initialClientListReceived = false;
+            myId = null;
+            lastTrackAt = 0;
+            resetMediaView();
+            showFreezeFrame();
+            try {
+                postLinkState({ ok: 0, live: 0, reason: "teardown" });
+            } catch (e) {}
+        }
+
+        function nowStuckConnecting() {
+            return Boolean(
+                isConnecting &&
+                lastConnectAttemptAt &&
+                Date.now() - lastConnectAttemptAt > 6000
+            );
+        }
+
+        function connect(force = false) {
+            if (window.__tdShuttingDown) {
+                return;
+            }
+            if (isConnecting) {
+                if (nowStuckConnecting()) {
+                    clearConnectLock();
+                } else {
+                    return;
+                }
+            }
+            lastConnectAttemptAt = Date.now();
+
+            isConnecting = true;
+            showFreezeFrame();
+            teardownConnections();
+
+            signalingClient = new SignalingClient(
+                wsHost,
+                wsPort,
+                (msg) => signalingClient?.onWebSocketMessageReceived(msg),
+                () => {
+                    isConnecting = false;
+                    reconnectAttempts = 0;
+                    clearReconnectTimer();
+                    clearConnectWatchdog();
+                    startMediaWatchdog();
+                    showFreezeFrame();
+                    log("Signaling 已連線", "success");
+                },
+                () => {
+                    isConnecting = false;
+                    showFreezeFrame();
+                    log("Signaling 連線中斷 — 不重連", "warn");
+                },
+                () => {
+                    isConnecting = false;
+                    showFreezeFrame();
+                    log("Signaling 發生錯誤 — 不重連", "warn");
+                }
+            );
+            webRTCConnection = new WebRTCConnection(signalingClient);
+            signalingClient.open();
+            clearConnectWatchdog();
+            connectWatchdogTimer = setTimeout(() => {
+                if (signalingClient?.webSocket?.readyState !== WebSocket.OPEN) {
+                    log("Signaling 連線逾時 — 不重連", "warn");
+                    isConnecting = false;
+                    showFreezeFrame();
+                }
+            }, watchdogConfig.connectTimeoutMs);
+        }
+
+        // 給 TD inject：已停用強制重連（手動重整頁面即可）
+        window.__tdForceReconnect = function () {
+            log("__tdForceReconnect disabled", "warn");
+        };
+        window.__tdReconnectIfStale = function (staleMs) {
+            return false;
+        };
+
+            document.addEventListener("DOMContentLoaded", () => {
+            const tdSignalHud = document.getElementById("td-signal-hud");
+            if (tdSignalHud && signalHudEnabled) {
+                tdSignalHud.hidden = false;
+                window.addEventListener("tdsignal", (ev) => {
+                    const d = ev.detail || {};
+                    tdSignalHud.textContent = JSON.stringify(d, null, 0);
+                });
+            } else if (tdSignalHud) {
+                tdSignalHud.remove();
+            }
+
+            const oscHud = document.getElementById("osc-hud");
+            const oscBtn = document.getElementById("osc-enable-btn");
+            if (!oscBridgeEnabled) {
+                if (oscHud) {
+                    oscHud.remove();
+                }
+                if (oscBtn) {
+                    oscBtn.remove();
+                }
+            } else {
+                if (oscHud) {
+                    oscHud.hidden = false;
+                    oscHud.textContent = "OSC 橋接待命";
+                }
+                if (oscBtn) {
+                    if (needsMotionPermissionPrompt()) {
+                        oscBtn.hidden = false;
+                        oscBtn.addEventListener("click", (ev) => {
+                            ev.stopPropagation();
+                            enableMotionSensors();
+                        });
+                    } else {
+                        oscBtn.hidden = true;
+                        // 桌面 / 不需授權：第一次點畫面時掛上 listener
+                        const bootSensors = () => {
+                            enableMotionSensors();
+                            document.removeEventListener("click", bootSensors, true);
+                            document.removeEventListener("touchstart", bootSensors, true);
+                        };
+                        document.addEventListener("click", bootSensors, { capture: true, once: true });
+                        document.addEventListener("touchstart", bootSensors, { capture: true, once: true });
+                    }
+                }
+            }
+
+            if (isRootOverviewPage) {
+                remoteVideo.muted = true;
+                fullscreenContainer.style.display = "none";
+            }
+            if (isThumbnailMode) {
+                remoteVideo.muted = true;
+                remoteVideo.volume = 0;
+                remoteVideo.style.opacity = "1";
+                freezeFrameCanvas.style.display = "none";
+            } else {
+                remoteVideo.style.opacity = "1";
+                freezeFrameCanvas.style.display = "none";
+                remoteVideo.muted = false;
+                remoteVideo.volume = 1;
+            }
+            buildPreviewHeader();
+            if (isRootOverviewPage) {
+                if (previewRefreshTimer) {
+                    clearInterval(previewRefreshTimer);
+                }
+                previewRefreshTimer = setInterval(() => {
+                    buildPreviewHeader();
+                }, Math.max(1000, previewRefreshMs));
+            } else {
+                start();
+            }
+
+            remoteVideo.addEventListener("loadeddata", () => {
+                showLiveVideo();
+                startSnapshotLoop();
+            });
+            remoteVideo.addEventListener("playing", () => {
+                showLiveVideo();
+                startSnapshotLoop();
+            });
+            remoteVideo.addEventListener("emptied", () => {
+                stopSnapshotLoop();
+            });
+            remoteVideo.addEventListener("pause", () => {
+                if (hasLiveVideo()) {
+                    remoteVideo.play().catch(() => {});
+                    return;
+                }
+                showFreezeFrame();
+            });
+            remoteVideo.addEventListener("waiting", () => {
+                if (hasLiveVideo()) {
+                    return;
+                }
+                showFreezeFrame();
+            });
+
+            const unlockAndFullscreen = () => {
+                remoteVideo.muted = false;
+                remoteVideo.volume = 1;
+                remoteVideo.play().catch(() => {});
+                tryEnterFullscreen();
+            };
+
+            document.addEventListener("click", unlockAndFullscreen, { capture: true });
+            document.addEventListener("touchstart", unlockAndFullscreen, { capture: true });
+
+            const hardStopForTdExit = () => {
+                window.__tdShuttingDown = true;
+                try {
+                    stopLinkHeartbeat(true);
+                } catch (e) {}
+                try {
+                    if (tdSignalTimer) {
+                        clearInterval(tdSignalTimer);
+                        tdSignalTimer = null;
+                    }
+                } catch (e) {}
+                try {
+                    if (oscRafId !== null) {
+                        cancelAnimationFrame(oscRafId);
+                        oscRafId = null;
+                    }
+                    window.removeEventListener("deviceorientation", onDeviceOrientation, true);
+                    window.removeEventListener("devicemotion", onDeviceMotion, true);
+                    oscSensorsLive = false;
+                    oscDataChannel = null;
+                } catch (e) {}
+                try {
+                    clearReconnectTimer();
+                } catch (e) {}
+                try {
+                    clearConnectWatchdog();
+                } catch (e) {}
+                try {
+                    clearMediaWatchdog();
+                } catch (e) {}
+                try {
+                    stopSnapshotLoop();
+                } catch (e) {}
+                try {
+                    teardownConnections();
+                } catch (e) {}
+            };
+            window.addEventListener("pagehide", hardStopForTdExit);
+            window.addEventListener("beforeunload", hardStopForTdExit);
+
+            startTdSignalPolling();
+            startLinkHeartbeat();
+        });
+    </script>
+</body>
+</html>
