@@ -183,6 +183,22 @@
             display: none !important;
         }
 
+        #wanVideo {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
+            background: #000;
+            display: none;
+            z-index: 15;
+            transform: scaleX(-1);
+        }
+
+        #wanVideo.show {
+            display: block;
+        }
+
         #connect-panel {
             position: fixed;
             inset: 0;
@@ -291,6 +307,7 @@
     <div id="fullscreen-container">
         <video id="remoteVideo" playsinline autoplay muted></video>
         <canvas id="freezeFrameCanvas"></canvas>
+        <img id="wanVideo" alt="WAN live" draggable="false" />
     </div>
     <div id="connect-panel" aria-hidden="true">
         <div id="connect-card">
@@ -418,6 +435,12 @@
         // ?osc=0 關閉；預設開（thumb/overview/入口 除外）
         const oscBridgeEnabled =
             urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
+        // 外網：Zrok 只通 HTTP/WSS，WebRTC UDP 常失敗 → live.jpg 備援
+        const feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
+        const forceWan =
+            urlParams.get("wan") === "1" ||
+            urlParams.get("pipe") === "http" ||
+            /\.share\.zrok\.io$/i.test(window.location.hostname);
         const previewScanFrom = Number(urlParams.get("thumbFrom") || 301);
         const previewScanTo = Number(urlParams.get("thumbTo") || 0);
         const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
@@ -444,6 +467,9 @@
         let latestOrient = null;
         let latestMotion = null;
         let lastOscHudAt = 0;
+        let wanTimer = null;
+        let wanActive = false;
+        const wanVideo = document.getElementById("wanVideo");
 
         function linkStatusName() {
             const port = (urlParams.get("port") || "").trim();
@@ -1594,7 +1620,7 @@
                 return;
             }
 
-            // 本機 TD WebServer：path 或 ?port= = TD signaling
+            // 本機 TD WebServer / zrok web：path 或 ?port= = TD signaling
             if (!onGithubPages) {
                 wsHost = wsParam || window.location.hostname;
                 wsPort = resolveDialPort(tdPort, wsHost);
@@ -1602,6 +1628,7 @@
                 setTimeout(() => {
                     tryEnterFullscreen();
                 }, 500);
+                armWanFallback();
                 return;
             }
 
@@ -1611,6 +1638,7 @@
                     persist: true,
                     rewriteUrl: false
                 });
+                armWanFallback();
                 return;
             }
 
@@ -1623,6 +1651,7 @@
                     persist: false,
                     rewriteUrl: true
                 });
+                armWanFallback();
                 return;
             }
             showConnectPanel(
@@ -1697,6 +1726,76 @@
                 remoteVideo.srcObject &&
                 remoteVideo.srcObject.getVideoTracks().some((t) => t.readyState === "live")
             );
+        }
+
+        function liveJpgUrl() {
+            const base = feedBase || window.location.origin;
+            return base.replace(/\/$/, "") + "/live.jpg?_=" + Date.now();
+        }
+
+        function stopWanPipe() {
+            wanActive = false;
+            if (wanTimer) {
+                clearInterval(wanTimer);
+                wanTimer = null;
+            }
+            if (wanVideo) {
+                wanVideo.classList.remove("show");
+                wanVideo.removeAttribute("src");
+            }
+        }
+
+        function startWanPipe(reason) {
+            if (!wanVideo || isThumbnailMode || isHubEntry) {
+                return;
+            }
+            if (wanActive) {
+                return;
+            }
+            wanActive = true;
+            log("WAN HTTP live.jpg: " + (reason || ""), "warn");
+            setOscHud("外網模式 live.jpg（經 Zrok HTTP）");
+            try {
+                showFreezeFrame();
+            } catch (e) {}
+            wanVideo.classList.add("show");
+            const kick = () => {
+                if (!wanActive) {
+                    return;
+                }
+                wanVideo.src = liveJpgUrl();
+            };
+            wanVideo.onload = () => {
+                try {
+                    freezeFrameCanvas.style.display = "none";
+                    remoteVideo.style.opacity = "0";
+                } catch (e) {}
+            };
+            kick();
+            wanTimer = setInterval(kick, 100);
+        }
+
+        function armWanFallback() {
+            if (isThumbnailMode || isHubEntry || isRootOverviewPage) {
+                return;
+            }
+            const need =
+                forceWan ||
+                onGithubPagesEarly ||
+                Boolean(feedBase) ||
+                (urlParams.get("ws") || "").indexOf("zrok") >= 0;
+            if (!need) {
+                return;
+            }
+            if (forceWan || feedBase) {
+                startWanPipe("forced");
+                return;
+            }
+            setTimeout(() => {
+                if (!hasLiveVideo()) {
+                    startWanPipe("webrtc-timeout");
+                }
+            }, 4500);
         }
 
         function clearConnectLock() {

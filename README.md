@@ -2,5 +2,5 @@
 
 entry: https://yijiamango.github.io/MyWebRTC/
 
-channel: https://yijiamango.github.io/MyWebRTC/321
+channel: https://if2trz9jrtrk.share.zrok.io/?port=321&ws=5xsf1eeohsl6.share.zrok.io&wan=1
 
