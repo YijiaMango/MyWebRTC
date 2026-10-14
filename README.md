@@ -4,21 +4,29 @@
 
 ## 用途
 
-GitHub Pages 靜態跳板：收 TouchDesigner WebRTC 畫面，並把手機 **DeviceOrientation / DeviceMotion** 經 DataChannel `OscData` 送回 TD，再由 Client `oscout_signal` 轉成區域 OSC。
+GitHub Pages 靜態跳板：收 TouchDesigner WebRTC 畫面，並把手機 DeviceOrientation / DeviceMotion 經 DataChannel `OscData` 送回 TD → `oscout_signal`。
 
 不含 MediaPipe / 鏡頭姿態。
 
-## 連線
+## 通道號 = TD Port（多路同步）
 
-1. TD 開好 Signaling（建議用 Cloudflare Tunnel / ngrok 打出 **WSS**）
-2. 手機開：
+URL 的 `port` **永遠跟 TD COMP 的 Port 相同**（Client_1 → 321、Client_2 → 322…）。
+
+| 場景 | URL | 實際 WebSocket |
+|------|-----|----------------|
+| 本機 / 同網 | `http://TD_IP:5757/?port=321` | `ws://TD_IP:321` |
+| GitHub Pages + tunnel | `?ws=xxx.trycloudflare.com&port=321` | `wss://xxx:443`（443 僅傳輸層；邏輯通道仍是 321） |
+
+多通道管理就記 TD 號碼即可，不必記 443。
 
 ```text
-https://yijiamango.github.io/MyWebRTC/?ws=你的tunnel主機&port=443
+https://yijiamango.github.io/MyWebRTC/?ws=你的tunnel&port=321
+https://yijiamango.github.io/MyWebRTC/?ws=你的tunnel&port=322
 ```
 
-3. iOS 先點「啟用姿態感測 → OSC」授權
-4. TD Client `oscout_signal` 會送出：
+每個 TD Client 各自打一條 `cloudflared tunnel --url http://127.0.0.1:32N`。
+
+## OSC（Client oscout）
 
 | Address | Args |
 |---------|------|
@@ -28,18 +36,16 @@ https://yijiamango.github.io/MyWebRTC/?ws=你的tunnel主機&port=443
 | `/webrtc/accelg` | x y z |
 | `/webrtc/rotrate` | alpha beta gamma |
 
-自訂訊息也可在 JSON 裡帶 `msgs: [["/foo",[1,2]]]`。
-
 ## Query
 
 | Param | 說明 |
 |-------|------|
-| `ws` | Signaling 主機（GH Pages **必填**） |
-| `port` | Signaling 埠（GH Pages 通常 `443`） |
+| `ws` | tunnel / signaling 主機（GH Pages 必填） |
+| `port` | **TD 通道號**（與 COMP Port 同步） |
+| `wsp` | 罕見：強制 dial 埠（預設 tunnel=443、區網=port） |
 | `osc=0` | 關閉姿態→OSC |
-| `signalHud=1` | 顯示 TD→Web JSON 浮層 |
+| `signalHud=1` | TD→Web JSON 浮層 |
 
 ## 同源檔
 
-TD 本機 WebServer 同源：`Dat/Qin_project/WebRTC_Client_1/WebServer/web_index.html`  
-改完請同步覆蓋本目錄 `index.html` 再推 GitHub。
+`Dat/Qin_project/WebRTC_Client_1/WebServer/web_index.html` → 同步本目錄 `index.html` 再推 GitHub。

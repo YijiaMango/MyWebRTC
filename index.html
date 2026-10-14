@@ -295,15 +295,15 @@
     <div id="connect-panel" aria-hidden="true">
         <div id="connect-card">
             <h1>接收 TD 畫面</h1>
-            <p>輸入 TouchDesigner Signaling（WSS）。GitHub Pages 必須用 tunnel 主機，不能填區網 IP。</p>
-            <label for="connect-ws">Signaling Host</label>
+            <p>通道號與 TD 的 Port 相同（321 / 322…）。GitHub Pages 請填 tunnel 主機；實際 WSS 會自動走 443，URL 仍寫你的 TD 埠。</p>
+            <label for="connect-ws">Signaling Host（tunnel）</label>
             <input id="connect-ws" type="text" autocomplete="off" spellcheck="false" placeholder="xxxx.trycloudflare.com" />
             <div class="row">
                 <div>
-                    <label for="connect-port">Port</label>
-                    <input id="connect-port" type="text" inputmode="numeric" value="443" />
+                    <label for="connect-port">TD Port（通道）</label>
+                    <input id="connect-port" type="text" inputmode="numeric" value="321" />
                 </div>
-                <div style="align-self:end;padding-bottom:12px;color:#6f7f96;font-size:12px;text-align:center;">WSS</div>
+                <div style="align-self:end;padding-bottom:12px;color:#6f7f96;font-size:12px;text-align:center;line-height:1.3;">與 TD<br>同步</div>
             </div>
             <button id="connect-go" type="button">連接並收看</button>
             <div id="connect-status"></div>
@@ -1337,13 +1337,43 @@
         }
 
         const LS_WS = "mywebrtc_ws_host";
-        const LS_PORT = "mywebrtc_ws_port";
+        const LS_PORT = "mywebrtc_td_port"; // 存 TD 通道號（與 COMP Port 同步），不是 443
 
         function normalizeWsHost(raw) {
             let h = String(raw || "").trim();
             h = h.replace(/^wss?:\/\//i, "").replace(/^https?:\/\//i, "");
             h = h.replace(/\/.*$/, "");
-            return h;
+            // host:443 / host:321 → 只留 host（真正 dial port 另算）
+            const hp = h.match(/^([^:/]+)/);
+            return hp ? hp[1] : h;
+        }
+
+        function isLanIpv4(host) {
+            return /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+        }
+
+        function isPublicTunnelHost(host) {
+            return /\.trycloudflare\.com$/i.test(host) || /\.ngrok(-free)?\.(app|io)$/i.test(host);
+        }
+
+        /**
+         * ?port= 永遠 = TD 通道號（321/322…）
+         * 真正 WebSocket dial：
+         *   - 本機 / 區網 IP → 同號（ws://ip:321）
+         *   - tunnel / HTTPS 公網 host → 443（可用 ?wsp= 覆寫）
+         */
+        function resolveDialPort(tdPort, host) {
+            const wsp = (urlParams.get("wsp") || urlParams.get("wsport") || "").trim();
+            if (wsp && /^\d{1,6}$/.test(wsp)) {
+                return wsp;
+            }
+            if (isLanIpv4(host)) {
+                return String(tdPort);
+            }
+            if (isPublicTunnelHost(host) || window.location.protocol === "https:") {
+                return "443";
+            }
+            return String(tdPort);
         }
 
         function showConnectPanel(msg) {
@@ -1358,12 +1388,14 @@
             panel.setAttribute("aria-hidden", "false");
             try {
                 const savedHost = localStorage.getItem(LS_WS) || "";
-                const savedPort = localStorage.getItem(LS_PORT) || "443";
+                const savedPort = localStorage.getItem(LS_PORT) || "321";
                 if (wsInput && !wsInput.value) {
                     wsInput.value = savedHost;
                 }
-                if (portInput && portInput.value === "443" && savedPort) {
-                    portInput.value = savedPort;
+                if (portInput) {
+                    // 舊版把 443 存進 LS：自動改回 321
+                    const n = String(savedPort || "321");
+                    portInput.value = n === "443" ? "321" : n;
                 }
             } catch (e) {}
             if (status) {
@@ -1384,39 +1416,53 @@
             panel.setAttribute("aria-hidden", "true");
         }
 
-        function beginWatch(host, port, { persist = true, rewriteUrl = true } = {}) {
+        function beginWatch(host, tdPortRaw, { persist = true, rewriteUrl = true } = {}) {
             const h = normalizeWsHost(host);
-            const p = String(port || "443").trim() || "443";
+            let tdPort = String(tdPortRaw || "").trim();
+            // 相容舊書籤：有人把 port=443 當 dial port → 當沒填通道，改 321
+            if (!tdPort || tdPort === "443") {
+                tdPort = "321";
+            }
+            if (!/^\d{1,6}$/.test(tdPort)) {
+                showConnectPanel("TD Port 請填與 TouchDesigner 相同的通道號（例如 321）");
+                return false;
+            }
             if (!h) {
                 showConnectPanel("請填 Signaling Host（例如 xxx.trycloudflare.com）");
                 return false;
             }
-            if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) && window.location.protocol === "https:") {
+            if (isLanIpv4(h) && window.location.protocol === "https:") {
                 showConnectPanel(
-                    "GitHub Pages 是 HTTPS，不能直連區網 IP 的 ws://。\n" +
-                    "請填 cloudflared tunnel 主機，或改開本機 QR：http://你的TD_IP:5757/?port=321"
+                    "GitHub Pages 是 HTTPS，不能直連區網 IP。\n" +
+                    "請填 cloudflared tunnel 主機，或改開本機：http://你的TD_IP:5757/?port=" + tdPort
                 );
                 return false;
             }
+            const dialPort = resolveDialPort(tdPort, h);
             wsHost = h;
-            wsPort = p;
+            wsPort = dialPort;
             if (persist) {
                 try {
                     localStorage.setItem(LS_WS, h);
-                    localStorage.setItem(LS_PORT, p);
+                    localStorage.setItem(LS_PORT, tdPort);
                 } catch (e) {}
             }
             if (rewriteUrl) {
                 const u = new URL(window.location.href);
                 u.searchParams.set("ws", h);
-                u.searchParams.set("port", p);
+                // URL 永遠跟 TD 同步；真正 dial 443 不寫進 ?port=
+                u.searchParams.set("port", tdPort);
+                u.searchParams.delete("wsp");
                 history.replaceState(null, "", u.toString());
             }
             hideConnectPanel();
             const status = document.getElementById("connect-status");
             if (status) {
                 status.className = "ok";
-                status.textContent = `連接 ${h}:${p}…`;
+                status.textContent =
+                    dialPort === String(tdPort)
+                        ? `連接 TD 通道 ${tdPort} → ${h}:${dialPort}`
+                        : `連接 TD 通道 ${tdPort} → ${h}:443（tunnel；邏輯埠 ${tdPort}）`;
             }
             connect();
             setTimeout(() => {
@@ -1457,10 +1503,11 @@
             const wsParam = (urlParams.get("ws") || "").trim();
             const onGithubPages = /\.github\.io$/i.test(window.location.hostname);
 
-            // 本機 TD WebServer：hostname 即機器，port 用 ?port= 或預設
+            // 本機 TD WebServer：?port= 就是 TD signaling 埠（與 COMP 同步）
             if (!onGithubPages) {
+                const tdPort = urlParams.get("port") || defaultPort;
                 wsHost = wsParam || window.location.hostname;
-                wsPort = urlParams.get("port") || defaultPort;
+                wsPort = resolveDialPort(tdPort, wsHost);
                 connect();
                 setTimeout(() => {
                     tryEnterFullscreen();
@@ -1468,9 +1515,9 @@
                 return;
             }
 
-            // GitHub Pages：收畫面是主流程，缺 ws 就跳出連接面板（可記住上次）
+            // GitHub Pages：?port=TD通道；缺 ws 跳出面板
             if (wsParam) {
-                beginWatch(wsParam, urlParams.get("port") || 443, {
+                beginWatch(wsParam, urlParams.get("port") || "321", {
                     persist: true,
                     rewriteUrl: false
                 });
@@ -1482,14 +1529,13 @@
                 saved = localStorage.getItem(LS_WS) || "";
             } catch (e) {}
             if (saved) {
-                // 有紀錄先自動連；失敗使用者可改
-                beginWatch(saved, localStorage.getItem(LS_PORT) || 443, {
+                beginWatch(saved, localStorage.getItem(LS_PORT) || "321", {
                     persist: false,
                     rewriteUrl: true
                 });
                 return;
             }
-            showConnectPanel("先連 Signaling，才能收到 TouchDesigner 畫面。");
+            showConnectPanel("先連 Signaling。TD Port 填與 TouchDesigner 相同的通道號。");
         }
 
         function silenceMediaBeforeTeardown() {
