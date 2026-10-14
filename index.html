@@ -294,10 +294,10 @@
     </div>
     <div id="connect-panel" aria-hidden="true">
         <div id="connect-card">
-            <h1>接收 TD 畫面</h1>
-            <p>通道號與 TD 的 Port 相同（321 / 322…）。GitHub Pages 請填 tunnel 主機；實際 WSS 會自動走 443，URL 仍寫你的 TD 埠。</p>
+            <h1>MyWebRTC 入口</h1>
+            <p>通用網址：<code style="color:#9ec1ff">/MyWebRTC/321</code> 或 <code style="color:#9ec1ff">/MyWebRTC/port/321</code>（與 TD Port 同步）。此頁填 Signaling 後進入通道。</p>
             <label for="connect-ws">Signaling Host（tunnel）</label>
-            <input id="connect-ws" type="text" autocomplete="off" spellcheck="false" placeholder="xxxx.trycloudflare.com" />
+            <input id="connect-ws" type="text" autocomplete="off" spellcheck="false" placeholder="xxxx.share.zrok.io" />
             <div class="row">
                 <div>
                     <label for="connect-port">TD Port（通道）</label>
@@ -355,15 +355,69 @@
         const urlParams = new URLSearchParams(window.location.search);
         const isThumbnailMode = urlParams.get("thumb") === "1";
         const onGithubPagesEarly = /\.github\.io$/i.test(window.location.hostname);
-        // GH Pages /MyWebRTC/ 不是 TD 總覽頁；總覽僅本機 WebServer root
+
+        /** GH Pages: /MyWebRTC/ → base=/MyWebRTC/ ；本機 TD: / → base=/ */
+        function getAppBasePath() {
+            const parts = window.location.pathname.split("/").filter(Boolean);
+            if (onGithubPagesEarly && parts.length >= 1) {
+                return "/" + parts[0] + "/";
+            }
+            return "/";
+        }
+
+        /**
+         * 通道號：
+         *   /MyWebRTC/321
+         *   /MyWebRTC/port/321
+         *   ?port=321（相容）
+         */
+        function parseTdPortFromLocation() {
+            const q = (urlParams.get("port") || "").trim();
+            if (q && /^\d{1,6}$/.test(q) && q !== "443") {
+                return q;
+            }
+            const parts = window.location.pathname.split("/").filter(Boolean);
+            let segs = parts.slice();
+            if (onGithubPagesEarly && segs.length) {
+                segs = segs.slice(1);
+            }
+            if (segs.length >= 2 && segs[0].toLowerCase() === "port" && /^\d{1,6}$/.test(segs[1])) {
+                return segs[1];
+            }
+            if (segs.length === 1 && /^\d{1,6}$/.test(segs[0])) {
+                return segs[0];
+            }
+            return "";
+        }
+
+        /** 入口頁：/MyWebRTC/ 或 /MyWebRTC（無通道 path） */
+        function isHubEntryPath() {
+            if (isThumbnailMode) {
+                return false;
+            }
+            const parts = window.location.pathname.split("/").filter(Boolean);
+            let segs = parts.slice();
+            if (onGithubPagesEarly && segs.length) {
+                segs = segs.slice(1);
+            }
+            return segs.length === 0 && !parseTdPortFromLocation();
+        }
+
+        const appBasePath = getAppBasePath();
+        const pathTdPort = parseTdPortFromLocation();
+        const isHubEntry = onGithubPagesEarly && isHubEntryPath();
+
+        // 本機 TD WebServer root 總覽（非 GH）
         const isRootOverviewPage =
             !onGithubPagesEarly &&
             window.location.pathname === "/" &&
             !urlParams.get("port") &&
-            !urlParams.get("ws");
-        const shouldAllowFullscreen = !isThumbnailMode && !isRootOverviewPage;
-        // ?osc=0 關閉；預設開（thumb/overview 除外）
-        const oscBridgeEnabled = urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage;
+            !urlParams.get("ws") &&
+            !pathTdPort;
+        const shouldAllowFullscreen = !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
+        // ?osc=0 關閉；預設開（thumb/overview/入口 除外）
+        const oscBridgeEnabled =
+            urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
         const previewScanFrom = Number(urlParams.get("thumbFrom") || 301);
         const previewScanTo = Number(urlParams.get("thumbTo") || 0);
         const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
@@ -1353,7 +1407,12 @@
         }
 
         function isPublicTunnelHost(host) {
-            return /\.trycloudflare\.com$/i.test(host) || /\.ngrok(-free)?\.(app|io)$/i.test(host);
+            return (
+                /\.share\.zrok\.io$/i.test(host) ||
+                /\.zrok\.io$/i.test(host) ||
+                /\.trycloudflare\.com$/i.test(host) ||
+                /\.ngrok(-free)?\.(app|io)$/i.test(host)
+            );
         }
 
         /**
@@ -1428,7 +1487,7 @@
                 return false;
             }
             if (!h) {
-                showConnectPanel("請填 Signaling Host（例如 xxx.trycloudflare.com）");
+                showConnectPanel("請填 Signaling Host（例如 xxx.share.zrok.io）");
                 return false;
             }
             if (isLanIpv4(h) && window.location.protocol === "https:") {
@@ -1450,9 +1509,14 @@
             if (rewriteUrl) {
                 const u = new URL(window.location.href);
                 u.searchParams.set("ws", h);
-                // URL 永遠跟 TD 同步；真正 dial 443 不寫進 ?port=
-                u.searchParams.set("port", tdPort);
                 u.searchParams.delete("wsp");
+                if (onGithubPagesEarly || /\.share\.zrok\.io$/i.test(window.location.hostname)) {
+                    // 通用 path：/MyWebRTC/321?ws=…
+                    u.pathname = appBasePath.replace(/\/?$/, "/") + tdPort;
+                    u.searchParams.delete("port");
+                } else {
+                    u.searchParams.set("port", tdPort);
+                }
                 history.replaceState(null, "", u.toString());
             }
             hideConnectPanel();
@@ -1502,10 +1566,23 @@
             }
             const wsParam = (urlParams.get("ws") || "").trim();
             const onGithubPages = /\.github\.io$/i.test(window.location.hostname);
+            const tdPort = pathTdPort || urlParams.get("port") || defaultPort;
 
-            // 本機 TD WebServer：?port= 就是 TD signaling 埠（與 COMP 同步）
+            // GH 入口 /MyWebRTC/：只當 hub，不自動連
+            if (isHubEntry) {
+                showConnectPanel(
+                    "入口頁。連線後會進入 /" + (tdPort || "321") + "\n" +
+                    "也可直接開 https://yijiamango.github.io/MyWebRTC/321?ws=你的tunnel"
+                );
+                const portInput = document.getElementById("connect-port");
+                if (portInput && !portInput.value) {
+                    portInput.value = "321";
+                }
+                return;
+            }
+
+            // 本機 TD WebServer：path 或 ?port= = TD signaling
             if (!onGithubPages) {
-                const tdPort = urlParams.get("port") || defaultPort;
                 wsHost = wsParam || window.location.hostname;
                 wsPort = resolveDialPort(tdPort, wsHost);
                 connect();
@@ -1515,9 +1592,9 @@
                 return;
             }
 
-            // GitHub Pages：?port=TD通道；缺 ws 跳出面板
+            // GitHub Pages 通道頁：/321 或 /port/321
             if (wsParam) {
-                beginWatch(wsParam, urlParams.get("port") || "321", {
+                beginWatch(wsParam, tdPort || "321", {
                     persist: true,
                     rewriteUrl: false
                 });
@@ -1529,13 +1606,20 @@
                 saved = localStorage.getItem(LS_WS) || "";
             } catch (e) {}
             if (saved) {
-                beginWatch(saved, localStorage.getItem(LS_PORT) || "321", {
+                beginWatch(saved, tdPort || localStorage.getItem(LS_PORT) || "321", {
                     persist: false,
                     rewriteUrl: true
                 });
                 return;
             }
-            showConnectPanel("先連 Signaling。TD Port 填與 TouchDesigner 相同的通道號。");
+            showConnectPanel(
+                "通道 " + (tdPort || "321") + "：請填 Signaling Host（zrok / tunnel）。\n" +
+                "通用網址格式：/MyWebRTC/" + (tdPort || "321")
+            );
+            const portInput = document.getElementById("connect-port");
+            if (portInput) {
+                portInput.value = tdPort || "321";
+            }
         }
 
         function silenceMediaBeforeTeardown() {
