@@ -1,5 +1,6 @@
-## 網址
+﻿## URL
 
-入口：https://yijiamango.github.io/MyWebRTC/
+entry: https://yijiamango.github.io/MyWebRTC/
 
-通道：https://yijiamango.github.io/MyWebRTC/321
+channel: https://yijiamango.github.io/MyWebRTC/321
+
