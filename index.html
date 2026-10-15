@@ -42,6 +42,47 @@
             box-sizing: border-box;
         }
 
+        /* GH entry：整頁由上到下多窗快照 */
+        body.hub-entry {
+            overflow: auto;
+        }
+        body.hub-entry #preview-header {
+            display: block !important;
+            inset: 0;
+            min-height: 100%;
+            height: 100%;
+            border-bottom: 0;
+            z-index: 100;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        body.hub-entry #preview-strip {
+            flex-direction: column;
+            flex-wrap: nowrap;
+            align-items: stretch;
+            min-height: 100%;
+            height: auto;
+            gap: 12px;
+            padding: 12px;
+        }
+        body.hub-entry .preview-card {
+            flex: 0 0 auto;
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+            aspect-ratio: 16 / 9;
+        }
+        body.hub-entry .preview-card iframe {
+            pointer-events: none;
+        }
+        body.hub-entry #fullscreen-container,
+        body.hub-entry #connect-panel,
+        body.hub-entry #osc-hud,
+        body.hub-entry #osc-enable-btn,
+        body.hub-entry #td-signal-hud {
+            display: none !important;
+        }
+
         .preview-card {
             flex: 1 1 180px;
             min-width: 110px;
@@ -827,9 +868,6 @@
         }
 
         function showFreezeFrame() {
-            if (isThumbnailMode) {
-                return;
-            }
             captureFreezeFrame();
             freezeFrameCanvas.style.display = "block";
             remoteVideo.style.opacity = "0";
@@ -839,41 +877,93 @@
             showLiveVideo();
         }
 
+        function hubFeedBase() {
+            const f = (urlParams.get("feed") || "").trim();
+            if (f) {
+                return f.replace(/\/$/, "");
+            }
+            return "https://yijiamango5757.share.zrok.io";
+        }
+
+        function hubWsHostForPort(port) {
+            const ws = (urlParams.get("ws") || "").trim();
+            if (ws) {
+                // 單一 ws 時所有卡共用；多頻道請用預設 yijiamango{port}
+                if (!String(ws).includes("{port}")) {
+                    return ws.replace(/^wss?:\/\//i, "").replace(/\/$/, "");
+                }
+            }
+            return `yijiamango${port}.share.zrok.io`;
+        }
+
+        function hubChannelHref(port, forThumb) {
+            const feed = hubFeedBase();
+            const ws = hubWsHostForPort(port);
+            const q = new URLSearchParams();
+            q.set("port", String(port));
+            q.set("ws", ws);
+            q.set("wan", "1");
+            q.set("feed", feed);
+            if (forThumb) {
+                q.set("thumb", "1");
+                q.set("fps", String(urlParams.get("thumbFps") || 10));
+                q.set("osc", "0");
+            }
+            // GH Pages SPA：/321?... ；本機 root：/?port=
+            if (onGithubPagesEarly) {
+                const base = window.location.pathname.replace(/\/?$/, "/");
+                return `${base}${port}?${q.toString()}`;
+            }
+            return `/?${q.toString()}`;
+        }
+
         function renderPreviewHeaderByPorts(ports) {
             if (!ports.length) {
-                previewStrip.innerHTML = "<div style=\"color:#8a8a8a;font-size:13px;padding:0 4px;\">尚未偵測到可用推送畫面（可用 ?thumbFrom=301&thumbTo=800 或動態掃描參數 ?thumbChunk=40&thumbMissStop=30）</div>";
+                previewStrip.innerHTML = "<div style=\"color:#8a8a8a;font-size:13px;padding:0 4px;\">尚未偵測到可用推送畫面（entry 可用 ?ports=321,322 或本機 ?thumbFrom=301）</div>";
                 previewHeader.style.display = "block";
-                fullscreenContainer.style.top = "0";
-                fullscreenContainer.style.height = "100vh";
+                if (!isHubEntry) {
+                    fullscreenContainer.style.top = "0";
+                    fullscreenContainer.style.height = "100vh";
+                }
                 lastRenderedPreviewKey = "";
                 return;
             }
 
-            const portsKey = ports.join(",");
+            const portsKey = (isHubEntry ? "hub|" : "local|") + ports.join(",");
             if (portsKey === lastRenderedPreviewKey) {
                 return;
             }
             lastRenderedPreviewKey = portsKey;
 
-            const host = window.location.hostname;
             previewStrip.innerHTML = "";
-            // ★ 不用 iframe 載 ?thumb=1：每個 iframe 都會連 Signaling + 失敗重連，
-            //   currentClients 會出現一堆同 IP 連線（例如 9–10）一直開關。
             for (const port of ports) {
                 const card = document.createElement("a");
                 card.className = "preview-card";
-                card.href = `/?port=${encodeURIComponent(port)}`;
+                card.href = hubChannelHref(port, false);
                 card.target = "_self";
-                card.style.display = "flex";
-                card.style.alignItems = "center";
-                card.style.justifyContent = "center";
-                card.style.fontSize = "13px";
-                card.style.color = "#c8c8c8";
-                card.textContent = `${host}:${port}`;
+                card.title = `channel ${port}`;
+
+                // 多窗快照：iframe 載 thumb（只拉 WAN JPEG，不連 Signaling）
+                const frame = document.createElement("iframe");
+                frame.src = hubChannelHref(port, true);
+                frame.loading = "lazy";
+                frame.setAttribute("allow", "autoplay; fullscreen");
+                frame.setAttribute("referrerpolicy", "no-referrer");
+                card.appendChild(frame);
+
+                const label = document.createElement("div");
+                label.className = "preview-card-label";
+                label.textContent = String(port);
+                card.appendChild(label);
                 previewStrip.appendChild(card);
             }
 
             previewHeader.style.display = "block";
+            if (isHubEntry) {
+                document.body.classList.add("hub-entry");
+                fullscreenContainer.style.display = "none";
+                return;
+            }
             requestAnimationFrame(() => {
                 const headerHeight = Math.max(132, previewHeader.offsetHeight || 132);
                 fullscreenContainer.style.top = `${headerHeight}px`;
@@ -933,17 +1023,25 @@
             return foundPorts;
         }
 
+        function parsePortList(raw) {
+            return String(raw || "")
+                .split(",")
+                .map((p) => p.trim())
+                .filter((p) => /^\d+$/.test(p))
+                .map((p) => Number(p));
+        }
+
         async function buildPreviewHeader() {
             if (isThumbnailMode) {
                 return;
             }
-            let thumbsRaw = (urlParams.get("thumbPorts") || "").trim();
-            if (thumbsRaw) {
-                const manualPorts = thumbsRaw
-                    .split(",")
-                    .map((p) => p.trim())
-                    .filter((p) => /^\d+$/.test(p));
-                renderPreviewHeaderByPorts(manualPorts);
+            let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
+            if (!manual.length && isHubEntry) {
+                // entry 預設多窗：reserved signal pool（可 ?ports=321,322 覆寫）
+                manual = parsePortList(urlParams.get("hubPorts") || "321,322,323,324,325,326");
+            }
+            if (manual.length) {
+                renderPreviewHeaderByPorts(manual);
                 return;
             }
 
@@ -1603,25 +1701,31 @@
         }
 
         function start() {
-            // thumb iframe / 總覽頁不進 Signaling（避免多客戶端互搶 + 重連抖動）
-            if (isThumbnailMode || isRootOverviewPage) {
-                log("thumb/overview: skip signaling connect");
+            // 總覽頁不進 Signaling
+            if (isRootOverviewPage) {
+                log("overview: skip signaling connect");
+                return;
+            }
+            // thumb 快照窗：只拉 WAN 畫面，不連 Signaling（避免多 iframe 互搶）
+            if (isThumbnailMode) {
+                log("thumb: WAN snapshot only (no signaling)");
+                document.body.style.overflow = "hidden";
+                try {
+                    if (previewHeader) {
+                        previewHeader.style.display = "none";
+                    }
+                } catch (e) {}
+                startWanPipe("thumb");
                 return;
             }
             const wsParam = (urlParams.get("ws") || "").trim();
             const onGithubPages = /\.github\.io$/i.test(window.location.hostname);
             const tdPort = pathTdPort || urlParams.get("port") || defaultPort;
 
-            // GH 入口 /MyWebRTC/：只當 hub，不自動連
+            // GH 入口 /MyWebRTC/：多窗快照（buildPreviewHeader），不彈連線面板
             if (isHubEntry) {
-                showConnectPanel(
-                    "入口頁。連線後會進入 /" + (tdPort || "321") + "\n" +
-                    "也可直接開 https://yijiamango.github.io/MyWebRTC/321?ws=你的tunnel"
-                );
-                const portInput = document.getElementById("connect-port");
-                if (portInput && !portInput.value) {
-                    portInput.value = "321";
-                }
+                log("hub entry: vertical snapshot wall");
+                document.body.classList.add("hub-entry");
                 return;
             }
 
@@ -1826,7 +1930,7 @@
         }
 
         function startWanPipe(reason) {
-            if (isThumbnailMode || isHubEntry) {
+            if (isHubEntry) {
                 return;
             }
             if (wanActive) {
