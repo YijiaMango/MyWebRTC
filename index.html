@@ -554,13 +554,17 @@
         // ?osc=0 關閉；預設開（thumb/overview/入口 除外）
         const oscBridgeEnabled =
             urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
-        // 外網：每頻道 feed=該 signal zrok（各自 live.jpg），不再共用 5757
+        // 外網頻道：各 signal zrok；hub 縮圖：單一 yijiamango/hubsnap/{port}（避 429）
         function defaultWsHostForPort(port) {
             const p = String(port || "321").replace(/\D/g, "") || "321";
             return `yijiamango${p}.share.zrok.io`;
         }
         function defaultFeedForPort(port) {
             return "https://" + defaultWsHostForPort(port);
+        }
+        function hubSnapFeedForPort(port) {
+            const p = String(port || "321").replace(/\D/g, "") || "321";
+            return `https://yijiamango.share.zrok.io/hubsnap/${p}`;
         }
         const channelPortForFeed = pathTdPort || urlParams.get("port") || defaultPort;
         let feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
@@ -1080,7 +1084,8 @@
                 img.decoding = "async";
                 img.loading = "lazy";
 
-                const feed = defaultFeedForPort(port).replace(/\/$/, "");
+                // hub 只打 yijiamango 一個 host，本機 proxy 再轉各埠
+                const feed = hubSnapFeedForPort(port).replace(/\/$/, "");
                 let snapBusy = false;
                 let failStreak = 0;
                 let lastOkAt = 0;
