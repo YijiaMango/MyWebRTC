@@ -114,7 +114,6 @@
             display: none !important;
             background: #111;
             border: 0;
-            /* JPEG 來源已 FLIP；勿再 scaleX 雙翻 */
         }
         .preview-card .preview-snap.is-live {
             display: block !important;
@@ -200,17 +199,12 @@
             overflow: hidden;
         }
 
-        :root {
-            --x-flip: -1;
-        }
-
         #remoteVideo {
             width: 100%;
             height: 100%;
             display: block;
             background: #000;
             object-fit: fill;
-            transform: scaleX(var(--x-flip));
             opacity: 0;
             pointer-events: none;
         }
@@ -224,7 +218,6 @@
             background: #111;
             z-index: 10;
             object-fit: fill;
-            transform: scaleX(var(--x-flip));
         }
 
         #td-signal-hud {
@@ -296,7 +289,6 @@
             background: #000;
             display: none;
             z-index: 15;
-            /* WAN JPEG 來源已 FLIP */
         }
 
         #wanVideo.show {
@@ -474,9 +466,6 @@
             noVideoTimeoutMs: 8000
         };
         const urlParams = new URLSearchParams(window.location.search);
-        if (urlParams.get("flip") === "0" || urlParams.get("xflip") === "0") {
-            document.documentElement.style.setProperty("--x-flip", "1");
-        }
         const isThumbnailMode = urlParams.get("thumb") === "1";
         const onGithubPagesEarly = /\.github\.io$/i.test(window.location.hostname);
 
