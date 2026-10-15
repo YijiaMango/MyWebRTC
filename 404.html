@@ -1242,6 +1242,33 @@
             } catch (e) {}
         }
 
+        function hubJsonUrl() {
+            try {
+                const base = (appBasePath || "/").replace(/\/?$/, "/");
+                return new URL("hub.json", window.location.origin + base).toString();
+            } catch (e) {
+                return "hub.json";
+            }
+        }
+
+        async function fetchHubJsonPorts() {
+            try {
+                const url = hubJsonUrl() + "?_=" + Date.now();
+                const ctrl = new AbortController();
+                const t = setTimeout(() => ctrl.abort(), 2500);
+                const r = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+                clearTimeout(t);
+                if (!r.ok) {
+                    return [];
+                }
+                const j = await r.json();
+                const arr = Array.isArray(j.ports) ? j.ports : [];
+                return arr.map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0);
+            } catch (e) {
+                return [];
+            }
+        }
+
         function mergeHubSticky(alive) {
             for (const p of alive) {
                 hubPortMiss[p] = 0;
@@ -1254,36 +1281,55 @@
             saveHubPortCache(hubStickyPorts);
         }
 
-        async function discoverHubAlivePorts(onBatch) {
-            const candidates = defaultHubPortCandidates();
-            const alive = [];
-            const batchSize = Math.max(4, Number(urlParams.get("hubBatch") || 10));
-            const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1200));
-            for (let i = 0; i < candidates.length; i += batchSize) {
-                const batch = candidates.slice(i, i + batchSize);
-                await Promise.all(
-                    batch.map(async (port) => {
-                        const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
-                        if (ok) {
-                            alive.push(port);
-                        }
-                    })
-                );
-                if (typeof onBatch === "function") {
-                    onBatch(alive.slice().sort((a, b) => a - b));
-                }
+        async function resolveHubCandidates() {
+            const manual = parsePortList(urlParams.get("hubPorts") || "");
+            if (manual.length) {
+                return manual;
             }
-            alive.sort((a, b) => a - b);
+            if (urlParams.get("hubScan") === "1") {
+                return defaultHubPortCandidates();
+            }
+            const fromJson = await fetchHubJsonPorts();
+            if (fromJson.length) {
+                return fromJson;
+            }
+            const cached = loadHubPortCache();
+            if (cached.length) {
+                return cached;
+            }
+            return [321, 322, 323, 324, 345, 360];
+        }
+
+        async function discoverHubAlivePorts(onBatch) {
+            const candidates = await resolveHubCandidates();
+            const timeoutMs = Math.max(250, Number(urlParams.get("hubProbeMs") || 700));
+            const results = await Promise.all(
+                candidates.map(async (port) => {
+                    const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
+                    return ok ? port : null;
+                })
+            );
+            const alive = results.filter((p) => p != null).sort((a, b) => a - b);
+            if (typeof onBatch === "function") {
+                onBatch(alive);
+            }
             return alive;
         }
 
         async function syncHubPreviewPorts() {
+            const listed = await fetchHubJsonPorts();
+            if (listed.length) {
+                mergeHubSticky(listed);
+            }
             const alive = await discoverHubAlivePorts((partial) => {
                 mergeHubSticky(partial);
             });
             const aliveSet = new Set(alive);
             hubStickyPorts = hubStickyPorts.filter((p) => {
                 if (aliveSet.has(p)) {
+                    return true;
+                }
+                if (listed.length && listed.includes(p)) {
                     return true;
                 }
                 hubPortMiss[p] = (hubPortMiss[p] || 0) + 1;
