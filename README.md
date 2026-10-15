@@ -1,13 +1,16 @@
-﻿## URL
+﻿## 最短網址（外網）
 
-entry: https://yijiamango.github.io/MyWebRTC/
-
-channel:
+推薦：
 ```
 https://yijiamango.github.io/MyWebRTC/321
 ```
 
-每頻道畫面走 **該 port 的 signal zrok**（`yijiamango321…/live.jpg`），不再共用 5757。  
-多 Client（digits→321/322…）各自 ShareZrok 後，入口快照才會分開。
+Zrok 直連（只需 port，不必再寫 ws）：
+```
+https://yijiamango5757.share.zrok.io/?port=321
+```
 
-TD：重載 `Signaling/signalingServer1/webserver1_callbacks`。
+入口多窗：
+```
+https://yijiamango.github.io/MyWebRTC/
+```

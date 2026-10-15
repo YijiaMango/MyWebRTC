@@ -465,9 +465,10 @@
         const pathTdPort = parseTdPortFromLocation();
         const isHubEntry = onGithubPagesEarly && isHubEntryPath();
 
-        // 本機 TD WebServer root 總覽（非 GH）
+        // 本機 TD WebServer root 總覽（非 GH、非 Zrok）
         const isRootOverviewPage =
             !onGithubPagesEarly &&
+            !/\.share\.zrok\.io$/i.test(window.location.hostname) &&
             window.location.pathname === "/" &&
             !urlParams.get("port") &&
             !urlParams.get("ws") &&
@@ -484,9 +485,11 @@
         function defaultFeedForPort(port) {
             return "https://" + defaultWsHostForPort(port);
         }
+        const onZrokHost = /\.share\.zrok\.io$/i.test(window.location.hostname);
         const channelPortForFeed = pathTdPort || urlParams.get("port") || defaultPort;
         let feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
-        if (!feedBase && onGithubPagesEarly && !isHubEntry) {
+        // GH 短網址 / Zrok web ?port= ：feed 預設 = 該頻道 signal（不必再寫 ws）
+        if (!feedBase && !isHubEntry && (onGithubPagesEarly || (onZrokHost && channelPortForFeed))) {
             feedBase = defaultFeedForPort(channelPortForFeed);
         }
         const wanFps = Math.max(15, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
@@ -1769,7 +1772,21 @@
                 return;
             }
 
-            // 本機 TD WebServer / zrok web：path 或 ?port= = TD signaling
+            const port = tdPort || "321";
+            const onZrok = /\.share\.zrok\.io$/i.test(window.location.hostname);
+
+            // Zrok web：?port=321 即可（自動 ws=yijiamango321、feed、wan）
+            if (!onGithubPages && onZrok) {
+                const wsHostAuto = wsParam || defaultWsHostForPort(port);
+                beginWatch(wsHostAuto, port, {
+                    persist: false,
+                    rewriteUrl: false
+                });
+                armWanFallback();
+                return;
+            }
+
+            // 本機 TD WebServer
             if (!onGithubPages) {
                 wsHost = wsParam || window.location.hostname;
                 wsPort = resolveDialPort(tdPort, wsHost);
@@ -1781,8 +1798,7 @@
                 return;
             }
 
-            // GitHub Pages 短網址 /321：預設 yijiamango{port} + feed（足夠外網）
-            const port = tdPort || "321";
+            // GitHub Pages 最短：/MyWebRTC/321
             const wsHostAuto = wsParam || defaultWsHostForPort(port);
             beginWatch(wsHostAuto, port, {
                 persist: Boolean(wsParam),
