@@ -503,12 +503,14 @@
 
         const appBasePath = getAppBasePath();
         const pathTdPort = parseTdPortFromLocation();
-        const isHubEntry = onGithubPagesEarly && isHubEntryPath();
+        const onZrokHost = /\.share\.zrok\.io$/i.test(window.location.hostname);
+        // GH 入口 或 Zrok 5757 根路徑（無 ?port=）= 多窗首頁
+        const isHubEntry = isHubEntryPath() && (onGithubPagesEarly || onZrokHost);
 
         // 本機 TD WebServer root 總覽（非 GH、非 Zrok）
         const isRootOverviewPage =
             !onGithubPagesEarly &&
-            !/\.share\.zrok\.io$/i.test(window.location.hostname) &&
+            !onZrokHost &&
             window.location.pathname === "/" &&
             !urlParams.get("port") &&
             !urlParams.get("ws") &&
@@ -525,7 +527,6 @@
         function defaultFeedForPort(port) {
             return "https://" + defaultWsHostForPort(port);
         }
-        const onZrokHost = /\.share\.zrok\.io$/i.test(window.location.hostname);
         const channelPortForFeed = pathTdPort || urlParams.get("port") || defaultPort;
         let feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
         // GH 短網址 / Zrok web ?port= ：feed 預設 = 該頻道 signal（不必再寫 ws）
@@ -533,13 +534,14 @@
             feedBase = defaultFeedForPort(channelPortForFeed);
         }
         const wanFps = Math.max(15, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
-        // GH 通道短網址預設外網；?wan=0 可關
+        // 頻道頁預設外網；hub 首頁不進 WAN
         const forceWan =
-            urlParams.get("wan") === "1" ||
-            urlParams.get("pipe") === "http" ||
-            urlParams.get("pipe") === "ws" ||
-            /\.share\.zrok\.io$/i.test(window.location.hostname) ||
-            (onGithubPagesEarly && !isHubEntry && urlParams.get("wan") !== "0");
+            !isHubEntry &&
+            (urlParams.get("wan") === "1" ||
+                urlParams.get("pipe") === "http" ||
+                urlParams.get("pipe") === "ws" ||
+                onZrokHost ||
+                (onGithubPagesEarly && urlParams.get("wan") !== "0"));
         const previewScanFrom = Number(urlParams.get("thumbFrom") || 301);
         const previewScanTo = Number(urlParams.get("thumbTo") || 0);
         const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
