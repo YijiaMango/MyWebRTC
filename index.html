@@ -178,7 +178,7 @@
             display: block;
             background: #000;
             object-fit: fill;
-            /* 與 TD TOP 同向，不再 CSS 鏡射（避免 WAN JPEG / canvas 再翻一次） */
+            transform: none !important;
             opacity: 0;
             pointer-events: none;
         }
@@ -192,6 +192,7 @@
             background: #111;
             z-index: 10;
             object-fit: fill;
+            transform: none !important;
         }
 
         #td-signal-hud {
@@ -263,6 +264,7 @@
             background: #000;
             display: none;
             z-index: 15;
+            transform: none !important;
         }
 
         #wanVideo.show {
