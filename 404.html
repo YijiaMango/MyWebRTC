@@ -545,7 +545,9 @@
         const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
         const previewMissStop = Math.max(5, Number(urlParams.get("thumbMissStop") || 30));
         const previewHardMax = Math.max(previewScanFrom, Number(urlParams.get("thumbMax") || 2000));
-        const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || 5000);
+        const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || (isHubEntry ? 30000 : 5000));
+        let hubStickyPorts = [];
+        const hubPortMiss = Object.create(null);
         const signalPollMs = Number(urlParams.get("signalPollMs") ?? 250);
         // 預設不顯示 JSON 浮層；除錯時網址加 ?signalHud=1
         const signalHudEnabled = urlParams.get("signalHud") === "1" && !isThumbnailMode;
@@ -995,7 +997,10 @@
             clearPreviewSnapTimers();
             previewStrip.innerHTML = "";
             // 主頁／總覽：只刷 live.jpg 快照，不 iframe、不 WS、不播放
-            const snapMs = Math.max(800, Number(urlParams.get("snapMs") || previewRefreshMs || 2000));
+            const snapMs = Math.max(
+                2000,
+                Number(urlParams.get("snapMs") || (isHubEntry ? 4000 : 3000))
+            );
             for (const port of ports) {
                 const card = document.createElement("a");
                 card.className = "preview-card";
@@ -1175,38 +1180,61 @@
                 .map((p) => Number(p));
         }
 
+        async function discoverHubAlivePorts() {
+            const candidates = parsePortList(
+                urlParams.get("hubPorts") || "321,322,323,324,325,326,327,328,329,330"
+            );
+            const alive = [];
+            const batchSize = 3;
+            for (let i = 0; i < candidates.length; i += batchSize) {
+                const batch = candidates.slice(i, i + batchSize);
+                await Promise.all(
+                    batch.map(async (port) => {
+                        const ok = await probeLiveFeed(defaultFeedForPort(port), 4000);
+                        if (ok) {
+                            alive.push(port);
+                        }
+                    })
+                );
+            }
+            alive.sort((a, b) => a - b);
+            return alive;
+        }
+
+        async function syncHubPreviewPorts() {
+            const alive = await discoverHubAlivePorts();
+            const aliveSet = new Set(alive);
+            for (const p of alive) {
+                hubPortMiss[p] = 0;
+                if (!hubStickyPorts.includes(p)) {
+                    hubStickyPorts.push(p);
+                }
+            }
+            hubStickyPorts = hubStickyPorts.filter((p) => {
+                if (aliveSet.has(p)) {
+                    return true;
+                }
+                hubPortMiss[p] = (hubPortMiss[p] || 0) + 1;
+                return hubPortMiss[p] < 3;
+            });
+            hubStickyPorts.sort((a, b) => a - b);
+            renderPreviewHeaderByPorts(hubStickyPorts);
+        }
+
         async function buildPreviewHeader() {
             if (isThumbnailMode) {
                 return;
             }
             let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (!manual.length && isHubEntry) {
-                // 探活成功的頻道才進格子；分批探避免連線打爆後誤判全關
-                const candidates = parsePortList(
-                    urlParams.get("hubPorts") || "321,322,323,324,325,326,327,328,329,330"
-                );
-                const alive = [];
-                const batchSize = 3;
-                for (let i = 0; i < candidates.length; i += batchSize) {
-                    const batch = candidates.slice(i, i + batchSize);
-                    await Promise.all(
-                        batch.map(async (port) => {
-                            const ok = await probeLiveFeed(defaultFeedForPort(port), 4000);
-                            if (ok) {
-                                alive.push(port);
-                            }
-                        })
-                    );
-                }
-                alive.sort((a, b) => a - b);
-                manual = alive;
+                await syncHubPreviewPorts();
+                return;
             }
             if (manual.length) {
                 renderPreviewHeaderByPorts(manual);
                 return;
             }
             if (isHubEntry) {
-                // 沒有任何頻道連上：清空預覽，不要硬塞 321 去載圖
                 renderPreviewHeaderByPorts([]);
                 return;
             }
@@ -2374,9 +2402,12 @@
                     clearInterval(previewRefreshTimer);
                 }
                 previewRefreshTimer = setInterval(() => {
-                    lastRenderedPreviewKey = "";
-                    buildPreviewHeader();
-                }, Math.max(1000, previewRefreshMs));
+                    if (isHubEntry) {
+                        syncHubPreviewPorts();
+                    } else {
+                        buildPreviewHeader();
+                    }
+                }, Math.max(10000, previewRefreshMs));
             } else {
                 start();
             }
