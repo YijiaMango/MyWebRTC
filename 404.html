@@ -1183,10 +1183,22 @@
                 .map((p) => Number(p));
         }
 
+        function defaultHubPortCandidates() {
+            const listed = parsePortList(urlParams.get("hubPorts") || "");
+            if (listed.length) {
+                return listed;
+            }
+            const from = Math.max(1, Number(urlParams.get("hubFrom") || 321));
+            const to = Math.max(from, Number(urlParams.get("hubTo") || 369));
+            const out = [];
+            for (let p = from; p <= to; p++) {
+                out.push(p);
+            }
+            return out;
+        }
+
         async function discoverHubAlivePorts() {
-            const candidates = parsePortList(
-                urlParams.get("hubPorts") || "321,322,323,324,325,326,327,328,329,330"
-            );
+            const candidates = defaultHubPortCandidates();
             const alive = [];
             const batchSize = 3;
             for (let i = 0; i < candidates.length; i += batchSize) {
