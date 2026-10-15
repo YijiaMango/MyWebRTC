@@ -1009,25 +1009,47 @@
                 img.decoding = "async";
                 img.loading = "eager";
                 const feed = defaultFeedForPort(port).replace(/\/$/, "");
+                let snapBusy = false;
+                let failStreak = 0;
+                const showSnap = () => {
+                    failStreak = 0;
+                    img.classList.add("is-live");
+                    card.classList.add("has-live");
+                };
                 const hideSnap = () => {
                     img.removeAttribute("src");
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
                 };
-                img.onload = () => {
-                    img.classList.add("is-live");
-                    card.classList.add("has-live");
-                };
-                img.onerror = hideSnap;
-                // 直接掛 src：成功顯示畫面，失敗維持置中「通道關閉」
                 const attachSnap = () => {
-                    if (!img.isConnected) {
+                    if (!img.isConnected || snapBusy) {
                         return;
                     }
-                    img.src = feed + "/live.jpg?_=" + Date.now();
+                    snapBusy = true;
+                    const url = feed + "/live.jpg?_=" + Date.now();
+                    const pre = new Image();
+                    pre.onload = () => {
+                        snapBusy = false;
+                        if (!img.isConnected) {
+                            return;
+                        }
+                        img.src = url;
+                        showSnap();
+                    };
+                    pre.onerror = () => {
+                        snapBusy = false;
+                        if (!img.isConnected) {
+                            return;
+                        }
+                        failStreak += 1;
+                        if (!card.classList.contains("has-live") || failStreak >= 3) {
+                            hideSnap();
+                        }
+                    };
+                    pre.src = url;
                 };
                 attachSnap();
-                previewSnapTimers.push(setInterval(attachSnap, snapMs));
+                previewSnapTimers.push(setInterval(attachSnap, Math.max(snapMs, 1500)));
                 card.appendChild(placeholder);
                 card.appendChild(img);
 
