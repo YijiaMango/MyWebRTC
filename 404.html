@@ -1305,38 +1305,41 @@
             if (manual.length) {
                 return manual;
             }
-            if (urlParams.get("hubScan") === "1") {
-                return defaultHubPortCandidates();
-            }
             const scanN = defaultHubScanN();
             const fromJson = await fetchHubJsonPorts();
-            // 超過 10：走 push 的 hub.json（完整即時列表）
-            if (fromJson.length > scanN) {
-                return fromJson;
-            }
-            // ≤10：有 json 用 json；否則只掃預設 10 埠
+            // 有 push json：一律用（含 ≤10；>10 也靠 json，不掃整段）
             if (fromJson.length > 0) {
                 return fromJson;
             }
-            const cached = loadHubPortCache();
-            if (cached.length > 0) {
-                return cached.length > scanN ? cached : cached;
+            if (urlParams.get("hubScan") === "0") {
+                return defaultHubScanPorts();
             }
-            return defaultHubScanPorts();
+            // 無 json：掃 321–369，discover 裡每次並行 hubScanN（預設 10）
+            return defaultHubPortCandidates();
         }
 
         async function discoverHubAlivePorts(onBatch) {
             const candidates = await resolveHubCandidates();
-            const timeoutMs = Math.max(250, Number(urlParams.get("hubProbeMs") || 700));
-            const results = await Promise.all(
-                candidates.map(async (port) => {
-                    const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
-                    return ok ? port : null;
-                })
-            );
-            const alive = results.filter((p) => p != null).sort((a, b) => a - b);
-            if (typeof onBatch === "function") {
-                onBatch(alive);
+            const batchSize = defaultHubScanN();
+            const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1500));
+            const alive = [];
+            for (let i = 0; i < candidates.length; i += batchSize) {
+                const batch = candidates.slice(i, i + batchSize);
+                const got = await Promise.all(
+                    batch.map(async (port) => {
+                        const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
+                        return ok ? port : null;
+                    })
+                );
+                for (const p of got) {
+                    if (p != null && !alive.includes(p)) {
+                        alive.push(p);
+                    }
+                }
+                alive.sort((a, b) => a - b);
+                if (typeof onBatch === "function") {
+                    onBatch(alive.slice());
+                }
             }
             return alive;
         }
@@ -1350,17 +1353,19 @@
                 mergeHubSticky(partial);
             });
             const aliveSet = new Set(alive);
+            const listedSet = new Set(listed);
             hubStickyPorts = hubStickyPorts.filter((p) => {
                 if (aliveSet.has(p)) {
                     return true;
                 }
-                if (listed.length && listed.includes(p)) {
+                if (listedSet.has(p)) {
                     return true;
                 }
                 hubPortMiss[p] = (hubPortMiss[p] || 0) + 1;
                 return hubPortMiss[p] < 3;
             });
             hubStickyPorts.sort((a, b) => a - b);
+            lastRenderedPreviewKey = "";
             renderPreviewHeaderByPorts(hubStickyPorts);
             saveHubPortCache(hubStickyPorts);
         }
@@ -1371,7 +1376,12 @@
             }
             let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (!manual.length && isHubEntry) {
-                if (!hubStickyPorts.length) {
+                const listed = await fetchHubJsonPorts();
+                if (listed.length) {
+                    hubStickyPorts = listed.slice().sort((a, b) => a - b);
+                    lastRenderedPreviewKey = "";
+                    renderPreviewHeaderByPorts(hubStickyPorts);
+                } else if (!hubStickyPorts.length) {
                     const cached = loadHubPortCache();
                     if (cached.length) {
                         hubStickyPorts = cached.slice();
