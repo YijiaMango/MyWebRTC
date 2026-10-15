@@ -57,9 +57,9 @@
         }
         body.hub-entry #preview-strip {
             display: grid;
-            /* 預設 10×8（320–399）；JS 會覆寫 */
-            grid-template-columns: repeat(10, minmax(0, 1fr));
-            grid-template-rows: repeat(8, minmax(0, 1fr));
+            /* 預設 5×10（321–370）；JS 會覆寫 */
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-template-rows: repeat(10, minmax(0, 1fr));
             align-content: stretch;
             width: 100%;
             height: 100%;
@@ -584,11 +584,11 @@
         const previewHardMax = Math.max(previewScanFrom, Number(urlParams.get("thumbMax") || 2000));
         // hub 結構同步間隔（不是整頁重載）；圖刷另走 snapMs
         const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || (isHubEntry ? 30000 : 5000));
-        const HUB_FROM = Math.max(1, Number(urlParams.get("hubFrom") || 320));
-        const HUB_TO = Math.max(HUB_FROM, Number(urlParams.get("hubTo") || 399));
-        const HUB_COLS = Math.max(1, Number(urlParams.get("hubCols") || 10));
+        const HUB_FROM = Math.max(1, Number(urlParams.get("hubFrom") || 321));
+        const HUB_TO = Math.max(HUB_FROM, Number(urlParams.get("hubTo") || 370));
+        const HUB_COLS = Math.max(1, Number(urlParams.get("hubCols") || 5));
         const HUB_SLOTS = HUB_TO - HUB_FROM + 1;
-        const HUB_ROWS = Math.max(1, Math.ceil(HUB_SLOTS / HUB_COLS));
+        const HUB_ROWS = Math.max(1, Number(urlParams.get("hubRows") || Math.ceil(HUB_SLOTS / HUB_COLS)));
         let hubGridBuilt = false;
         let hubProbeCursor = 0;
         const signalPollMs = Number(urlParams.get("signalPollMs") ?? 250);
