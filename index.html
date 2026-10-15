@@ -556,7 +556,10 @@
         let lastRenderedPreviewKey = "";
 
         function clearPreviewSnapTimers() {
-            previewSnapTimers.forEach((id) => clearInterval(id));
+            previewSnapTimers.forEach((id) => {
+                clearInterval(id);
+                clearTimeout(id);
+            });
             previewSnapTimers = [];
         }
         let tdSignalTimer = null;
@@ -1003,7 +1006,7 @@
 
                 const placeholder = document.createElement("div");
                 placeholder.className = "preview-placeholder";
-                placeholder.textContent = "通道關閉";
+                placeholder.textContent = ""; // 載入中不寫「通道關閉」
 
                 const img = document.createElement("img");
                 img.className = "preview-snap";
@@ -1016,15 +1019,17 @@
                 let failStreak = 0;
                 const showSnap = () => {
                     failStreak = 0;
+                    placeholder.textContent = "";
                     img.classList.add("is-live");
                     card.classList.add("has-live");
                 };
-                const hideSnap = () => {
+                const markClosed = () => {
+                    placeholder.textContent = "通道關閉";
                     img.removeAttribute("src");
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
                 };
-                // 預載成功才換 src：避免刷新中途 onerror / 空檔把畫面閃成「通道關閉」
+                // 預載成功才換圖；已顯示則失敗保留最後一幀。只有長時間載不到才「通道關閉」
                 const attachSnap = () => {
                     if (!img.isConnected || snapBusy) {
                         return;
@@ -1046,15 +1051,19 @@
                             return;
                         }
                         failStreak += 1;
-                        // 已有畫面：偶發失敗保留最後一幀；連續失敗才顯示關閉
-                        if (!card.classList.contains("has-live") || failStreak >= 3) {
-                            hideSnap();
+                        if (card.classList.contains("has-live")) {
+                            return; // 抓到過就繼續顯示，不要閃關閉
+                        }
+                        if (failStreak >= 8) {
+                            markClosed();
                         }
                     };
                     pre.src = url;
                 };
-                attachSnap();
-                previewSnapTimers.push(setInterval(attachSnap, Math.max(snapMs, 1500)));
+                // 錯開首載，避免同時打爆連線被誤判關閉
+                const kick = window.setTimeout(attachSnap, (Number(port) % 10) * 150);
+                previewSnapTimers.push(kick);
+                previewSnapTimers.push(setInterval(attachSnap, Math.max(snapMs, 2000)));
                 card.appendChild(placeholder);
                 card.appendChild(img);
 
@@ -1175,19 +1184,23 @@
             }
             let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (!manual.length && isHubEntry) {
-                // 只顯示 live.jpg 有回應的頻道（避免全顯示同一個 5757 畫面）
+                // 探活成功的頻道才進格子；分批探避免連線打爆後誤判全關
                 const candidates = parsePortList(
                     urlParams.get("hubPorts") || "321,322,323,324,325,326,327,328,329,330"
                 );
                 const alive = [];
-                await Promise.all(
-                    candidates.map(async (port) => {
-                        const ok = await probeLiveFeed(defaultFeedForPort(port));
-                        if (ok) {
-                            alive.push(port);
-                        }
-                    })
-                );
+                const batchSize = 3;
+                for (let i = 0; i < candidates.length; i += batchSize) {
+                    const batch = candidates.slice(i, i + batchSize);
+                    await Promise.all(
+                        batch.map(async (port) => {
+                            const ok = await probeLiveFeed(defaultFeedForPort(port), 4000);
+                            if (ok) {
+                                alive.push(port);
+                            }
+                        })
+                    );
+                }
                 alive.sort((a, b) => a - b);
                 manual = alive;
             }
