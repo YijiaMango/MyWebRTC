@@ -999,9 +999,10 @@
             clearPreviewSnapTimers();
             previewStrip.innerHTML = "";
             // 主頁／總覽：只刷 live.jpg 快照，不 iframe、不 WS、不播放
+            // 首頁預覽預設 5 秒刷一幀
             const snapMs = Math.max(
-                2000,
-                Number(urlParams.get("snapMs") || (isHubEntry ? 4000 : 3000))
+                1000,
+                Number(urlParams.get("snapMs") || (isHubEntry ? 5000 : 3000))
             );
             for (const port of ports) {
                 const card = document.createElement("a");
@@ -1069,7 +1070,7 @@
                 // 錯開首載，避免同時打爆連線被誤判關閉
                 const kick = window.setTimeout(attachSnap, (Number(port) % 10) * 150);
                 previewSnapTimers.push(kick);
-                previewSnapTimers.push(setInterval(attachSnap, Math.max(snapMs, 2000)));
+                previewSnapTimers.push(setInterval(attachSnap, snapMs));
                 card.appendChild(placeholder);
                 card.appendChild(img);
 
