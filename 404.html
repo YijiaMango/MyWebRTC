@@ -1201,7 +1201,6 @@
         }
 
         function defaultHubPortCandidates() {
-            // 與 ShareZrok services.txt 一致：321–369；可用 ?hubPorts= 或 ?hubFrom=&hubTo= 覆寫
             const listed = parsePortList(urlParams.get("hubPorts") || "");
             if (listed.length) {
                 return listed;
@@ -1215,35 +1214,66 @@
             return out;
         }
 
-        async function discoverHubAlivePorts() {
-            const candidates = defaultHubPortCandidates();
-            const alive = [];
-            const batchSize = 3;
-            for (let i = 0; i < candidates.length; i += batchSize) {
-                const batch = candidates.slice(i, i + batchSize);
-                await Promise.all(
-                    batch.map(async (port) => {
-                        const ok = await probeLiveFeed(defaultFeedForPort(port), 4000);
-                        if (ok) {
-                            alive.push(port);
-                        }
-                    })
-                );
+        const HUB_PORT_CACHE_KEY = "mywebrtc_hub_ports_v1";
+
+        function loadHubPortCache() {
+            try {
+                const arr = JSON.parse(localStorage.getItem(HUB_PORT_CACHE_KEY) || "[]");
+                if (!Array.isArray(arr)) {
+                    return [];
+                }
+                return arr.map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0);
+            } catch (e) {
+                return [];
             }
-            alive.sort((a, b) => a - b);
-            return alive;
         }
 
-        async function syncHubPreviewPorts() {
-            // sticky：探活偶發失敗不拆格子，連續 miss 3 次才拿掉 → 首頁不會一直整排重建
-            const alive = await discoverHubAlivePorts();
-            const aliveSet = new Set(alive);
+        function saveHubPortCache(ports) {
+            try {
+                localStorage.setItem(HUB_PORT_CACHE_KEY, JSON.stringify(ports || []));
+            } catch (e) {}
+        }
+
+        function mergeHubSticky(alive) {
             for (const p of alive) {
                 hubPortMiss[p] = 0;
                 if (!hubStickyPorts.includes(p)) {
                     hubStickyPorts.push(p);
                 }
             }
+            hubStickyPorts.sort((a, b) => a - b);
+            renderPreviewHeaderByPorts(hubStickyPorts);
+            saveHubPortCache(hubStickyPorts);
+        }
+
+        async function discoverHubAlivePorts(onBatch) {
+            const candidates = defaultHubPortCandidates();
+            const alive = [];
+            const batchSize = Math.max(4, Number(urlParams.get("hubBatch") || 10));
+            const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1200));
+            for (let i = 0; i < candidates.length; i += batchSize) {
+                const batch = candidates.slice(i, i + batchSize);
+                await Promise.all(
+                    batch.map(async (port) => {
+                        const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
+                        if (ok) {
+                            alive.push(port);
+                        }
+                    })
+                );
+                if (typeof onBatch === "function") {
+                    onBatch(alive.slice().sort((a, b) => a - b));
+                }
+            }
+            alive.sort((a, b) => a - b);
+            return alive;
+        }
+
+        async function syncHubPreviewPorts() {
+            const alive = await discoverHubAlivePorts((partial) => {
+                mergeHubSticky(partial);
+            });
+            const aliveSet = new Set(alive);
             hubStickyPorts = hubStickyPorts.filter((p) => {
                 if (aliveSet.has(p)) {
                     return true;
@@ -1253,6 +1283,7 @@
             });
             hubStickyPorts.sort((a, b) => a - b);
             renderPreviewHeaderByPorts(hubStickyPorts);
+            saveHubPortCache(hubStickyPorts);
         }
 
         async function buildPreviewHeader() {
@@ -1261,6 +1292,13 @@
             }
             let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (!manual.length && isHubEntry) {
+                if (!hubStickyPorts.length) {
+                    const cached = loadHubPortCache();
+                    if (cached.length) {
+                        hubStickyPorts = cached.slice();
+                        renderPreviewHeaderByPorts(hubStickyPorts);
+                    }
+                }
                 await syncHubPreviewPorts();
                 return;
             }
