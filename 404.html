@@ -72,8 +72,17 @@
             min-width: 0;
             aspect-ratio: 16 / 9;
         }
-        body.hub-entry .preview-card iframe {
+        body.hub-entry .preview-card iframe,
+        body.hub-entry .preview-card .preview-snap {
             pointer-events: none;
+        }
+        .preview-card .preview-snap {
+            width: 100%;
+            height: 100%;
+            object-fit: fill;
+            display: block;
+            background: #111;
+            border: 0;
         }
         body.hub-entry #fullscreen-container,
         body.hub-entry #connect-panel,
@@ -446,9 +455,12 @@
             return "";
         }
 
-        /** 入口頁：/MyWebRTC/ 或 /MyWebRTC（無通道 path） */
+        /** 入口頁：/MyWebRTC/ 或 /MyWebRTC（無通道 path；index/404 也算入口） */
         function isHubEntryPath() {
             if (isThumbnailMode) {
+                return false;
+            }
+            if (parseTdPortFromLocation()) {
                 return false;
             }
             const parts = window.location.pathname.split("/").filter(Boolean);
@@ -456,7 +468,13 @@
             if (onGithubPagesEarly && segs.length) {
                 segs = segs.slice(1);
             }
-            return segs.length === 0 && !parseTdPortFromLocation();
+            if (segs.length === 0) {
+                return true;
+            }
+            if (segs.length === 1 && /^(index|404)\.html$/i.test(segs[0])) {
+                return true;
+            }
+            return false;
         }
 
         const appBasePath = getAppBasePath();
@@ -510,7 +528,13 @@
         // TD DataChannel 高頻 JSON 會塞爆主執行緒，易與影片解碼互搶造成卡頓；加 ?tdDcCoalesce=1 改為每幀最多派送一次（取最新一筆）
         const tdDcCoalesce = urlParams.get("tdDcCoalesce") === "1";
         let previewRefreshTimer = null;
+        let previewSnapTimers = [];
         let lastRenderedPreviewKey = "";
+
+        function clearPreviewSnapTimers() {
+            previewSnapTimers.forEach((id) => clearInterval(id));
+            previewSnapTimers = [];
+        }
         let tdSignalTimer = null;
         let lastTdSignalSeq = -1;
         let pendingTdSignalFromDc = null;
@@ -932,7 +956,10 @@
             }
             lastRenderedPreviewKey = portsKey;
 
+            clearPreviewSnapTimers();
             previewStrip.innerHTML = "";
+            // 主頁／總覽：只刷 live.jpg 快照，不 iframe、不 WS、不播放
+            const snapMs = Math.max(800, Number(urlParams.get("snapMs") || previewRefreshMs || 2000));
             for (const port of ports) {
                 const card = document.createElement("a");
                 card.className = "preview-card";
@@ -940,13 +967,18 @@
                 card.target = "_self";
                 card.title = `channel ${port}`;
 
-                // 多窗快照：iframe 載 thumb（只拉 WAN JPEG，不連 Signaling）
-                const frame = document.createElement("iframe");
-                frame.src = hubChannelHref(port, true);
-                frame.loading = "lazy";
-                frame.setAttribute("allow", "autoplay; fullscreen");
-                frame.setAttribute("referrerpolicy", "no-referrer");
-                card.appendChild(frame);
+                const img = document.createElement("img");
+                img.className = "preview-snap";
+                img.alt = String(port);
+                img.decoding = "async";
+                img.loading = "lazy";
+                const feed = defaultFeedForPort(port).replace(/\/$/, "");
+                const bump = () => {
+                    img.src = feed + "/live.jpg?_=" + Date.now();
+                };
+                bump();
+                previewSnapTimers.push(setInterval(bump, snapMs));
+                card.appendChild(img);
 
                 const label = document.createElement("div");
                 label.className = "preview-card-label";
@@ -959,6 +991,9 @@
             if (isHubEntry) {
                 document.body.classList.add("hub-entry");
                 fullscreenContainer.style.display = "none";
+                try {
+                    document.getElementById("connect-panel")?.classList.remove("show");
+                } catch (e) {}
                 return;
             }
             requestAnimationFrame(() => {
@@ -1744,16 +1779,27 @@
                 log("overview: skip signaling connect");
                 return;
             }
-            // thumb 快照窗：只拉 WAN 畫面，不連 Signaling（避免多 iframe 互搶）
+            // thumb：靜態 live.jpg（不 WS 播放）
             if (isThumbnailMode) {
-                log("thumb: WAN snapshot only (no signaling)");
+                log("thumb: static live.jpg only");
                 document.body.style.overflow = "hidden";
                 try {
                     if (previewHeader) {
                         previewHeader.style.display = "none";
                     }
                 } catch (e) {}
-                startWanPipe("thumb");
+                const feed = (feedBase || defaultFeedForPort(pathTdPort || urlParams.get("port") || "321")).replace(
+                    /\/$/,
+                    ""
+                );
+                if (wanVideo) {
+                    wanVideo.classList.add("show");
+                    const bump = () => {
+                        wanVideo.src = feed + "/live.jpg?_=" + Date.now();
+                    };
+                    bump();
+                    wanTimer = setInterval(bump, Math.max(800, Number(urlParams.get("snapMs") || 2000)));
+                }
                 return;
             }
             const wsParam = (urlParams.get("ws") || "").trim();
@@ -2231,27 +2277,34 @@
                 }
             }
 
-            if (isRootOverviewPage) {
+            if (isRootOverviewPage || isHubEntry) {
                 remoteVideo.muted = true;
                 fullscreenContainer.style.display = "none";
+                if (isHubEntry) {
+                    document.body.classList.add("hub-entry");
+                }
+                try {
+                    document.getElementById("connect-panel")?.classList.remove("show");
+                } catch (e) {}
             }
             if (isThumbnailMode) {
                 remoteVideo.muted = true;
                 remoteVideo.volume = 0;
-                remoteVideo.style.opacity = "1";
+                remoteVideo.style.opacity = "0";
                 freezeFrameCanvas.style.display = "none";
-            } else {
+            } else if (!isHubEntry && !isRootOverviewPage) {
                 remoteVideo.style.opacity = "1";
                 freezeFrameCanvas.style.display = "none";
                 remoteVideo.muted = false;
                 remoteVideo.volume = 1;
             }
             buildPreviewHeader();
-            if (isRootOverviewPage) {
+            if (isRootOverviewPage || isHubEntry) {
                 if (previewRefreshTimer) {
                     clearInterval(previewRefreshTimer);
                 }
                 previewRefreshTimer = setInterval(() => {
+                    lastRenderedPreviewKey = "";
                     buildPreviewHeader();
                 }, Math.max(1000, previewRefreshMs));
             } else {
