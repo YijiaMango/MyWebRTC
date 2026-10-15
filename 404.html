@@ -1208,6 +1208,10 @@
                 .map((p) => Number(p));
         }
 
+        function defaultHubScanN() {
+            return Math.max(1, Number(urlParams.get("hubScanN") || 10));
+        }
+
         function defaultHubPortCandidates() {
             const listed = parsePortList(urlParams.get("hubPorts") || "");
             if (listed.length) {
@@ -1217,6 +1221,21 @@
             const to = Math.max(from, Number(urlParams.get("hubTo") || 369));
             const out = [];
             for (let p = from; p <= to; p++) {
+                out.push(p);
+            }
+            return out;
+        }
+
+        function defaultHubScanPorts() {
+            const from = Math.max(1, Number(urlParams.get("hubFrom") || 321));
+            const n = defaultHubScanN();
+            const toCap = Number(urlParams.get("hubTo") || 0);
+            const out = [];
+            for (let i = 0; i < n; i++) {
+                const p = from + i;
+                if (toCap > 0 && p > toCap) {
+                    break;
+                }
                 out.push(p);
             }
             return out;
@@ -1289,15 +1308,21 @@
             if (urlParams.get("hubScan") === "1") {
                 return defaultHubPortCandidates();
             }
+            const scanN = defaultHubScanN();
             const fromJson = await fetchHubJsonPorts();
-            if (fromJson.length) {
+            // 超過 10：走 push 的 hub.json（完整即時列表）
+            if (fromJson.length > scanN) {
+                return fromJson;
+            }
+            // ≤10：有 json 用 json；否則只掃預設 10 埠
+            if (fromJson.length > 0) {
                 return fromJson;
             }
             const cached = loadHubPortCache();
-            if (cached.length) {
-                return cached;
+            if (cached.length > 0) {
+                return cached.length > scanN ? cached : cached;
             }
-            return [321, 322, 323, 324, 345, 360];
+            return defaultHubScanPorts();
         }
 
         async function discoverHubAlivePorts(onBatch) {
