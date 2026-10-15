@@ -84,9 +84,27 @@
             width: 100%;
             height: 100%;
             object-fit: fill;
-            display: block;
+            display: none !important;
             background: #111;
             border: 0;
+        }
+        .preview-card .preview-snap.is-live {
+            display: block !important;
+        }
+        .preview-card .preview-placeholder {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            color: #9a9a9a;
+            font-size: 15px;
+            letter-spacing: 0.04em;
+            background: #111;
+            pointer-events: none;
+            z-index: 1;
+        }
+        .preview-card.has-live .preview-placeholder {
+            display: none;
         }
         body.hub-entry #fullscreen-container,
         body.hub-entry #connect-panel,
@@ -971,17 +989,47 @@
                 card.target = "_self";
                 card.title = `channel ${port}`;
 
+                const placeholder = document.createElement("div");
+                placeholder.className = "preview-placeholder";
+                placeholder.textContent = "通道關閉";
+
                 const img = document.createElement("img");
                 img.className = "preview-snap";
-                img.alt = String(port);
+                img.alt = "";
+                img.setAttribute("aria-hidden", "true");
                 img.decoding = "async";
                 img.loading = "lazy";
+                img.hidden = true;
                 const feed = defaultFeedForPort(port).replace(/\/$/, "");
-                const bump = () => {
-                    img.src = feed + "/live.jpg?_=" + Date.now();
+                const hideSnap = () => {
+                    img.removeAttribute("src");
+                    img.hidden = true;
+                    img.classList.remove("is-live");
+                    card.classList.remove("has-live");
+                    placeholder.textContent = "通道關閉";
                 };
-                bump();
-                previewSnapTimers.push(setInterval(bump, snapMs));
+                img.onload = () => {
+                    img.hidden = false;
+                    img.classList.add("is-live");
+                    card.classList.add("has-live");
+                };
+                img.onerror = hideSnap;
+                // 先 probe，成功才掛 src；失敗只顯示置中「通道關閉」
+                const attachSnap = () => {
+                    if (!img.isConnected) {
+                        return;
+                    }
+                    probeLiveFeed(feed).then((ok) => {
+                        if (!ok || !img.isConnected) {
+                            hideSnap();
+                            return;
+                        }
+                        img.src = feed + "/live.jpg?_=" + Date.now();
+                    });
+                };
+                attachSnap();
+                previewSnapTimers.push(setInterval(attachSnap, snapMs));
+                card.appendChild(placeholder);
                 card.appendChild(img);
 
                 const label = document.createElement("div");
@@ -1115,10 +1163,15 @@
                     })
                 );
                 alive.sort((a, b) => a - b);
-                manual = alive.length ? alive : [321];
+                manual = alive;
             }
             if (manual.length) {
                 renderPreviewHeaderByPorts(manual);
+                return;
+            }
+            if (isHubEntry) {
+                // 沒有任何頻道連上：清空預覽，不要硬塞 321 去載圖
+                renderPreviewHeaderByPorts([]);
                 return;
             }
 
