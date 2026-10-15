@@ -3,5 +3,5 @@
 - 入口：[https://yijiamango.github.io/MyWebRTC/](https://yijiamango.github.io/MyWebRTC/)
 - 頻道：[https://yijiamango.github.io/MyWebRTC/321](https://yijiamango.github.io/MyWebRTC/321)
 
-自動補齊 `ws` / `feed` / `wan`。多頻道畫面各自走 signal zrok `/live.jpg`。
+Hub 固定 `20×20`（321–720），不通顯示停用；開著的格自動更新畫面。
 
