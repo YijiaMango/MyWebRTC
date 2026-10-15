@@ -476,15 +476,18 @@
         // ?osc=0 關閉；預設開（thumb/overview/入口 除外）
         const oscBridgeEnabled =
             urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
-        // 外網：短網址 /MyWebRTC/321 預設走 reserved Zrok（可 ?ws= / ?feed= 覆寫）
-        const DEFAULT_FEED_HOST = "yijiamango5757.share.zrok.io";
+        // 外網：每頻道 feed=該 signal zrok（各自 live.jpg），不再共用 5757
         function defaultWsHostForPort(port) {
             const p = String(port || "321").replace(/\D/g, "") || "321";
             return `yijiamango${p}.share.zrok.io`;
         }
+        function defaultFeedForPort(port) {
+            return "https://" + defaultWsHostForPort(port);
+        }
+        const channelPortForFeed = pathTdPort || urlParams.get("port") || defaultPort;
         let feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
         if (!feedBase && onGithubPagesEarly && !isHubEntry) {
-            feedBase = "https://" + DEFAULT_FEED_HOST;
+            feedBase = defaultFeedForPort(channelPortForFeed);
         }
         const wanFps = Math.max(15, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
         // GH 通道短網址預設外網；?wan=0 可關
@@ -887,27 +890,13 @@
             showLiveVideo();
         }
 
-        function hubFeedBase() {
-            const f = (urlParams.get("feed") || "").trim();
-            if (f) {
-                return f.replace(/\/$/, "");
-            }
-            return "https://yijiamango5757.share.zrok.io";
-        }
-
         function hubWsHostForPort(port) {
-            const ws = (urlParams.get("ws") || "").trim();
-            if (ws) {
-                // 單一 ws 時所有卡共用；多頻道請用預設 yijiamango{port}
-                if (!String(ws).includes("{port}")) {
-                    return ws.replace(/^wss?:\/\//i, "").replace(/\/$/, "");
-                }
-            }
-            return `yijiamango${port}.share.zrok.io`;
+            return defaultWsHostForPort(port);
         }
 
         function hubChannelHref(port, forThumb) {
-            const feed = hubFeedBase();
+            // 每格自己的 signal zrok = ws + feed（畫面跟頻道綁定）
+            const feed = defaultFeedForPort(port);
             const ws = hubWsHostForPort(port);
             const q = new URLSearchParams();
             q.set("port", String(port));
@@ -981,6 +970,34 @@
             });
         }
 
+        function probeLiveFeed(feedBase, timeoutMs = 2500) {
+            return new Promise((resolve) => {
+                const base = String(feedBase || "").replace(/\/$/, "");
+                if (!base) {
+                    resolve(false);
+                    return;
+                }
+                const img = new Image();
+                const timer = setTimeout(() => {
+                    try {
+                        img.onload = null;
+                        img.onerror = null;
+                        img.src = "";
+                    } catch (e) {}
+                    resolve(false);
+                }, timeoutMs);
+                img.onload = () => {
+                    clearTimeout(timer);
+                    resolve(true);
+                };
+                img.onerror = () => {
+                    clearTimeout(timer);
+                    resolve(false);
+                };
+                img.src = base + "/live.jpg?_=" + Date.now();
+            });
+        }
+
         async function probeHttpPort(host, port, timeoutMs = 900) {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -1047,8 +1064,21 @@
             }
             let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (!manual.length && isHubEntry) {
-                // entry 預設多窗：reserved signal pool（可 ?ports=321,322 覆寫）
-                manual = parsePortList(urlParams.get("hubPorts") || "321,322,323,324,325,326");
+                // 只顯示 live.jpg 有回應的頻道（避免全顯示同一個 5757 畫面）
+                const candidates = parsePortList(
+                    urlParams.get("hubPorts") || "321,322,323,324,325,326,327,328,329,330"
+                );
+                const alive = [];
+                await Promise.all(
+                    candidates.map(async (port) => {
+                        const ok = await probeLiveFeed(defaultFeedForPort(port));
+                        if (ok) {
+                            alive.push(port);
+                        }
+                    })
+                );
+                alive.sort((a, b) => a - b);
+                manual = alive.length ? alive : [321];
             }
             if (manual.length) {
                 renderPreviewHeaderByPorts(manual);
