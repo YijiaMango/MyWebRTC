@@ -918,8 +918,18 @@
         }
 
         function showLiveVideo() {
-            // 正常播放：直接看 <video>，不要靠 canvas 取樣（CEF rvfc 會停 → 假停格）
             if (isThumbnailMode) {
+                return;
+            }
+            if (hasLiveVideo()) {
+                if (wanActive) {
+                    stopWanPipe();
+                }
+                remoteVideo.style.opacity = "1";
+                freezeFrameCanvas.style.display = "none";
+                if (wanVideo) {
+                    wanVideo.classList.remove("show");
+                }
                 return;
             }
             if (wanActive) {
@@ -2102,6 +2112,7 @@
                         freezeFrameCanvas.style.display = "none";
                         remoteVideo.style.opacity = "0";
                     } catch (e) {}
+                    ensureWanAudioPassThrough();
                     finish();
                 };
                 wanVideo.onerror = () => {
@@ -2136,6 +2147,7 @@
                         if (wanVideo) {
                             wanVideo.classList.remove("show");
                         }
+                        ensureWanAudioPassThrough();
                         finish();
                     })
                     .catch(() => {
@@ -2318,6 +2330,22 @@
             }, 1000);
         }
 
+        function ensureWanAudioPassThrough() {
+            try {
+                const stream = remoteVideo.srcObject;
+                if (!stream) {
+                    return;
+                }
+                const hasAudio = stream.getAudioTracks().some((t) => t.readyState === "live");
+                if (!hasAudio) {
+                    return;
+                }
+                remoteVideo.muted = false;
+                remoteVideo.volume = 1;
+                remoteVideo.play().catch(() => {});
+            } catch (e) {}
+        }
+
         function armWanFallback() {
             if (isThumbnailMode || isHubEntry || isRootOverviewPage) {
                 return;
@@ -2330,15 +2358,13 @@
             if (!need) {
                 return;
             }
-            if (forceWan || feedBase) {
-                startWanPipe("forced");
-                return;
-            }
+            const waitMs = forceWan || feedBase || onGithubPagesEarly ? 3500 : 4500;
             setTimeout(() => {
-                if (!hasLiveVideo()) {
-                    startWanPipe("webrtc-timeout");
+                if (hasLiveVideo()) {
+                    return;
                 }
-            }, 4500);
+                startWanPipe("webrtc-timeout");
+            }, waitMs);
         }
 
         function clearConnectLock() {
@@ -2351,30 +2377,29 @@
         function startMediaWatchdog() {
             clearMediaWatchdog();
             mediaWatchdogTimer = setInterval(() => {
-                if (wanActive) {
-                    return;
-                }
                 const connected = signalingClient?.webSocket?.readyState === WebSocket.OPEN;
                 if (!connected) {
-                    // 不自動重連
                     return;
                 }
 
                 if (hasLiveVideo()) {
                     lastTrackAt = Date.now();
-                    // 有 live track：確保顯示 live video，不要卡在停格層
-                    if (remoteVideo.style.opacity === "0" || freezeFrameCanvas.style.display === "block") {
-                        if (!remoteVideo.paused) {
-                            showLiveVideo();
-                        }
-                    }
+                    showLiveVideo();
                     if (remoteVideo.paused) {
                         remoteVideo.play().catch(() => {});
                     }
+                    try {
+                        remoteVideo.muted = false;
+                        remoteVideo.volume = 1;
+                    } catch (e) {}
                     return;
                 }
 
-                // 已連 signaling 但沒 live track：只停格，不要亂拆連線
+                if (wanActive) {
+                    ensureWanAudioPassThrough();
+                    return;
+                }
+
                 showFreezeFrame();
             }, 1000);
         }
