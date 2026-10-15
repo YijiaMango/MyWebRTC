@@ -998,34 +998,25 @@
                 img.alt = "";
                 img.setAttribute("aria-hidden", "true");
                 img.decoding = "async";
-                img.loading = "lazy";
-                img.hidden = true;
+                img.loading = "eager";
                 const feed = defaultFeedForPort(port).replace(/\/$/, "");
                 const hideSnap = () => {
                     img.removeAttribute("src");
-                    img.hidden = true;
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
-                    placeholder.textContent = "通道關閉";
                 };
                 img.onload = () => {
-                    img.hidden = false;
                     img.classList.add("is-live");
                     card.classList.add("has-live");
                 };
                 img.onerror = hideSnap;
-                // 先 probe，成功才掛 src；失敗只顯示置中「通道關閉」
+                // 直接掛 src：成功顯示畫面，失敗維持置中「通道關閉」
+                // 不要先 probe 再決定——probe 失敗會誤殺已顯示的預覽
                 const attachSnap = () => {
                     if (!img.isConnected) {
                         return;
                     }
-                    probeLiveFeed(feed).then((ok) => {
-                        if (!ok || !img.isConnected) {
-                            hideSnap();
-                            return;
-                        }
-                        img.src = feed + "/live.jpg?_=" + Date.now();
-                    });
+                    img.src = feed + "/live.jpg?_=" + Date.now();
                 };
                 attachSnap();
                 previewSnapTimers.push(setInterval(attachSnap, snapMs));
