@@ -1060,10 +1060,13 @@
             previewStrip.style.gridTemplateRows = `repeat(${HUB_ROWS}, minmax(0, 1fr))`;
 
             const ports = fixedHubPorts();
-            const probes = [];
-            // zrok free-tier 易 429：全 hub 同時只許 1 個 in-flight，失敗要冷卻
+            const probeByPort = Object.create(null);
+            // 同時 1 個 in-flight；失敗不要全域凍 8 秒（否則永遠卡在前四格）
             let hubProbeInflight = 0;
             let hubProbeCoolUntil = 0;
+            let hubFailBurst = 0;
+            let priorityPorts = [];
+            let priorityCursor = 0;
             for (let i = 0; i < ports.length; i++) {
                 const port = ports[i];
                 const card = document.createElement("a");
@@ -1084,13 +1087,13 @@
                 img.decoding = "async";
                 img.loading = "lazy";
 
-                // hub 只打 yijiamango 一個 host，本機 proxy 再轉各埠
                 const feed = hubSnapFeedForPort(port).replace(/\/$/, "");
                 let snapBusy = false;
                 let failStreak = 0;
                 let lastOkAt = 0;
                 const showLive = () => {
                     failStreak = 0;
+                    hubFailBurst = 0;
                     lastOkAt = Date.now();
                     placeholder.textContent = "ｘ";
                     img.classList.add("is-live");
@@ -1111,8 +1114,7 @@
                     if (hubProbeInflight > 0 || Date.now() < hubProbeCoolUntil) {
                         return false;
                     }
-                    // 已有畫面：慢刷，少打 zrok
-                    if (card.classList.contains("has-live") && Date.now() - lastOkAt < 10000) {
+                    if (card.classList.contains("has-live") && Date.now() - lastOkAt < 8000) {
                         return false;
                     }
                     snapBusy = true;
@@ -1136,18 +1138,21 @@
                         if (!img.isConnected) {
                             return;
                         }
-                        // 可能是 429：全 hub 冷卻，避免全滅
-                        hubProbeCoolUntil = Date.now() + 8000;
                         failStreak += 1;
-                        // 已顯示過的保留最後一幀；未見過的多失敗幾次才 ｘ
-                        if (!card.classList.contains("has-live") && failStreak >= 6) {
+                        hubFailBurst += 1;
+                        // 連續大爆才當 429 冷卻；一般 502 立刻探下一格
+                        if (hubFailBurst >= 12) {
+                            hubFailBurst = 0;
+                            hubProbeCoolUntil = Date.now() + 5000;
+                        }
+                        if (!card.classList.contains("has-live") && failStreak >= 3) {
                             showDown();
                         }
                     };
                     pre.src = url;
                     return true;
                 };
-                probes.push(attachSnap);
+                probeByPort[port] = attachSnap;
 
                 const label = document.createElement("div");
                 label.className = "preview-card-label";
@@ -1158,22 +1163,61 @@
                 previewStrip.appendChild(card);
             }
 
-            // 每次只探 1 格、約 1.2s 一格 → 50 格約 1 分鐘一輪，避開 zrok 429
-            const tickMs = Math.max(800, Number(urlParams.get("hubTickMs") || 1200));
+            const refreshPriority = async () => {
+                try {
+                    const url =
+                        "https://yijiamango.share.zrok.io/hubsnap/status.json?_=" + Date.now();
+                    const ctrl = new AbortController();
+                    const t = setTimeout(() => ctrl.abort(), 2500);
+                    const r = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+                    clearTimeout(t);
+                    if (!r.ok) {
+                        return;
+                    }
+                    const j = await r.json();
+                    const arr = Array.isArray(j.listening) ? j.listening : [];
+                    priorityPorts = arr
+                        .map((p) => Number(p))
+                        .filter((p) => Number.isFinite(p) && probeByPort[p]);
+                    priorityCursor = 0;
+                } catch (e) {}
+            };
+
+            // 先打 listening 埠（345 等跳號會立刻輪到），空號偶爾掃
+            const tickMs = Math.max(400, Number(urlParams.get("hubTickMs") || 600));
+            let fullScanCursor = 0;
+            let tickN = 0;
             const tick = () => {
                 if (Date.now() < hubProbeCoolUntil || hubProbeInflight > 0) {
                     return;
                 }
-                for (let n = 0; n < probes.length; n++) {
-                    const idx = hubProbeCursor % probes.length;
-                    hubProbeCursor = (hubProbeCursor + 1) % probes.length;
-                    if (probes[idx]()) {
-                        break;
+                tickN += 1;
+                // 每 8 次 tick 穿插 1 次全表掃；其餘優先 listening
+                const usePriority = priorityPorts.length && tickN % 8 !== 0;
+                if (usePriority) {
+                    for (let n = 0; n < priorityPorts.length; n++) {
+                        const p = priorityPorts[priorityCursor % priorityPorts.length];
+                        priorityCursor = (priorityCursor + 1) % priorityPorts.length;
+                        if (probeByPort[p] && probeByPort[p]()) {
+                            return;
+                        }
+                    }
+                }
+                for (let n = 0; n < ports.length; n++) {
+                    const p = ports[fullScanCursor % ports.length];
+                    fullScanCursor = (fullScanCursor + 1) % ports.length;
+                    if (probeByPort[p] && probeByPort[p]()) {
+                        return;
                     }
                 }
             };
-            tick();
+            refreshPriority().then(() => {
+                tick();
+            });
             previewSnapTimers.push(setInterval(tick, tickMs));
+            previewSnapTimers.push(setInterval(() => {
+                refreshPriority();
+            }, 5000));
 
             previewHeader.style.display = "block";
             document.body.classList.add("hub-entry");
