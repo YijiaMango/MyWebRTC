@@ -42,9 +42,9 @@
             box-sizing: border-box;
         }
 
-        /* GH entry：整頁由上到下多窗快照 */
+        /* GH entry：20 欄鋪滿視窗，不捲動 */
         body.hub-entry {
-            overflow: auto;
+            overflow: hidden;
         }
         body.hub-entry #preview-header {
             display: block !important;
@@ -53,25 +53,49 @@
             height: 100%;
             border-bottom: 0;
             z-index: 100;
-            overflow-y: auto;
-            -webkit-overflow-scrolling: touch;
+            overflow: hidden;
         }
         body.hub-entry #preview-strip {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            align-content: start;
+            grid-template-columns: repeat(20, minmax(0, 1fr));
+            grid-template-rows: repeat(20, minmax(0, 1fr));
+            align-content: stretch;
+            width: 100%;
+            height: 100%;
             min-height: 100%;
-            height: auto;
-            gap: 10px;
-            padding: 10px;
+            gap: 1px;
+            padding: 1px;
             box-sizing: border-box;
+            overflow: hidden;
+        }
+        body.hub-entry .preview-card.is-down {
+            background: #0a0a0a;
+        }
+        body.hub-entry .preview-card.is-down .preview-placeholder {
+            color: #666;
         }
         body.hub-entry .preview-card {
             flex: unset;
             width: 100%;
-            max-width: 100%;
+            height: 100%;
+            max-width: none;
             min-width: 0;
-            aspect-ratio: 1 / 1;
+            min-height: 0;
+            aspect-ratio: unset;
+            border-radius: 0;
+            border-width: 0;
+        }
+        body.hub-entry .preview-card-label {
+            height: 12px;
+            line-height: 12px;
+            font-size: 9px;
+            padding: 0 1px;
+        }
+        body.hub-entry .preview-card .preview-placeholder {
+            font-size: 8px;
+            letter-spacing: 0;
+            text-align: center;
+            padding: 2px;
         }
         body.hub-entry .preview-card .preview-snap {
             object-fit: cover;
@@ -557,8 +581,11 @@
         const previewHardMax = Math.max(previewScanFrom, Number(urlParams.get("thumbMax") || 2000));
         // hub 結構同步間隔（不是整頁重載）；圖刷另走 snapMs
         const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || (isHubEntry ? 30000 : 5000));
-        let hubStickyPorts = [];
-        const hubPortMiss = Object.create(null);
+        const HUB_COLS = 20;
+        const HUB_ROWS = 20;
+        const HUB_SLOTS = HUB_COLS * HUB_ROWS;
+        let hubGridBuilt = false;
+        let hubProbeCursor = 0;
         const signalPollMs = Number(urlParams.get("signalPollMs") ?? 250);
         // 預設不顯示 JSON 浮層；除錯時網址加 ?signalHud=1
         const signalHudEnabled = urlParams.get("signalHud") === "1" && !isThumbnailMode;
@@ -1001,19 +1028,138 @@
             return `/?${q.toString()}`;
         }
 
+        function fixedHubPorts() {
+            const from = Math.max(1, Number(urlParams.get("hubFrom") || 321));
+            const out = [];
+            for (let i = 0; i < HUB_SLOTS; i++) {
+                out.push(from + i);
+            }
+            return out;
+        }
+
+        function renderFixedHubGrid() {
+            if (hubGridBuilt && lastRenderedPreviewKey === "hub|20x20") {
+                return;
+            }
+            hubGridBuilt = true;
+            lastRenderedPreviewKey = "hub|20x20";
+            clearPreviewSnapTimers();
+            previewStrip.innerHTML = "";
+            hubProbeCursor = 0;
+
+            const ports = fixedHubPorts();
+            const probes = [];
+            for (let i = 0; i < ports.length; i++) {
+                const port = ports[i];
+                const card = document.createElement("a");
+                card.className = "preview-card is-down";
+                card.href = hubChannelHref(port, false);
+                card.target = "_self";
+                card.title = `channel ${port}`;
+                card.dataset.port = String(port);
+
+                const placeholder = document.createElement("div");
+                placeholder.className = "preview-placeholder";
+                placeholder.textContent = "停用";
+
+                const img = document.createElement("img");
+                img.className = "preview-snap";
+                img.alt = "";
+                img.setAttribute("aria-hidden", "true");
+                img.decoding = "async";
+                img.loading = "lazy";
+
+                const feed = defaultFeedForPort(port).replace(/\/$/, "");
+                let snapBusy = false;
+                let failStreak = 0;
+                const showLive = () => {
+                    failStreak = 0;
+                    placeholder.textContent = "停用";
+                    img.classList.add("is-live");
+                    card.classList.add("has-live");
+                    card.classList.remove("is-down");
+                };
+                const showDown = () => {
+                    placeholder.textContent = "停用";
+                    img.removeAttribute("src");
+                    img.classList.remove("is-live");
+                    card.classList.remove("has-live");
+                    card.classList.add("is-down");
+                };
+                const attachSnap = () => {
+                    if (!img.isConnected || snapBusy) {
+                        return;
+                    }
+                    snapBusy = true;
+                    const url = feed + "/live.jpg?_=" + Date.now();
+                    const pre = new Image();
+                    pre.onload = () => {
+                        snapBusy = false;
+                        if (!img.isConnected) {
+                            return;
+                        }
+                        img.src = url;
+                        showLive();
+                    };
+                    pre.onerror = () => {
+                        snapBusy = false;
+                        if (!img.isConnected) {
+                            return;
+                        }
+                        failStreak += 1;
+                        if (failStreak >= 2) {
+                            showDown();
+                        }
+                    };
+                    pre.src = url;
+                };
+                probes.push(attachSnap);
+
+                const label = document.createElement("div");
+                label.className = "preview-card-label";
+                label.textContent = String(port);
+                card.appendChild(placeholder);
+                card.appendChild(img);
+                card.appendChild(label);
+                previewStrip.appendChild(card);
+            }
+
+            // 每秒探 20 格，約 20 秒掃完一輪（不建 400 個 interval）
+            const batch = HUB_COLS;
+            const tickMs = Math.max(400, Number(urlParams.get("hubTickMs") || 1000));
+            const tick = () => {
+                for (let b = 0; b < batch; b++) {
+                    const idx = (hubProbeCursor + b) % probes.length;
+                    probes[idx]();
+                }
+                hubProbeCursor = (hubProbeCursor + batch) % probes.length;
+            };
+            tick();
+            previewSnapTimers.push(setInterval(tick, tickMs));
+
+            previewHeader.style.display = "block";
+            document.body.classList.add("hub-entry");
+            fullscreenContainer.style.display = "none";
+            try {
+                document.getElementById("connect-panel")?.classList.remove("show");
+            } catch (e) {}
+        }
+
         function renderPreviewHeaderByPorts(ports) {
+            if (isHubEntry) {
+                renderFixedHubGrid();
+                return;
+            }
             if (!ports.length) {
                 previewStrip.innerHTML = "<div style=\"color:#8a8a8a;font-size:13px;padding:0 4px;\">尚未偵測到可用推送畫面</div>";
                 previewHeader.style.display = "block";
-                if (!isHubEntry) {
-                    fullscreenContainer.style.top = "0";
-                    fullscreenContainer.style.height = "100vh";
-                }
+                fullscreenContainer.style.top = "0";
+                fullscreenContainer.style.height = "100vh";
                 lastRenderedPreviewKey = "";
                 return;
             }
 
-            const portsKey = (isHubEntry ? "hub|" : "local|") + ports.join(",");
+            const portsKey = "local|" + ports.join(",");
             if (portsKey === lastRenderedPreviewKey) {
                 return;
             }
@@ -1021,12 +1167,7 @@
 
             clearPreviewSnapTimers();
             previewStrip.innerHTML = "";
-            // 主頁／總覽：只刷 live.jpg 快照，不 iframe、不 WS、不播放
-            // 首頁預覽預設 5 秒刷一幀
-            const snapMs = Math.max(
-                1000,
-                Number(urlParams.get("snapMs") || (isHubEntry ? 5000 : 3000))
-            );
+            const snapMs = Math.max(1000, Number(urlParams.get("snapMs") || 3000));
             for (const port of ports) {
                 const card = document.createElement("a");
                 card.className = "preview-card";
@@ -1036,7 +1177,7 @@
 
                 const placeholder = document.createElement("div");
                 placeholder.className = "preview-placeholder";
-                placeholder.textContent = ""; // 載入中不寫「通道關閉」
+                placeholder.textContent = "停用";
 
                 const img = document.createElement("img");
                 img.className = "preview-snap";
@@ -1049,17 +1190,15 @@
                 let failStreak = 0;
                 const showSnap = () => {
                     failStreak = 0;
-                    placeholder.textContent = "";
                     img.classList.add("is-live");
                     card.classList.add("has-live");
                 };
                 const markClosed = () => {
-                    placeholder.textContent = "通道關閉";
+                    placeholder.textContent = "停用";
                     img.removeAttribute("src");
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
                 };
-                // 預載成功才換圖；已顯示則失敗保留最後一幀。只有長時間載不到才「通道關閉」
                 const attachSnap = () => {
                     if (!img.isConnected || snapBusy) {
                         return;
@@ -1081,16 +1220,12 @@
                             return;
                         }
                         failStreak += 1;
-                        if (card.classList.contains("has-live")) {
-                            return; // 抓到過就繼續顯示，不要閃關閉
-                        }
-                        if (failStreak >= 8) {
+                        if (failStreak >= 3) {
                             markClosed();
                         }
                     };
                     pre.src = url;
                 };
-                // 錯開首載，避免同時打爆連線被誤判關閉
                 const kick = window.setTimeout(attachSnap, (Number(port) % 10) * 150);
                 previewSnapTimers.push(kick);
                 previewSnapTimers.push(setInterval(attachSnap, snapMs));
@@ -1105,14 +1240,6 @@
             }
 
             previewHeader.style.display = "block";
-            if (isHubEntry) {
-                document.body.classList.add("hub-entry");
-                fullscreenContainer.style.display = "none";
-                try {
-                    document.getElementById("connect-panel")?.classList.remove("show");
-                } catch (e) {}
-                return;
-            }
             requestAnimationFrame(() => {
                 const headerHeight = Math.max(132, previewHeader.offsetHeight || 132);
                 fullscreenContainer.style.top = `${headerHeight}px`;
@@ -1208,190 +1335,22 @@
                 .map((p) => Number(p));
         }
 
-        function defaultHubScanN() {
-            return Math.max(1, Number(urlParams.get("hubScanN") || 10));
-        }
-
-        function defaultHubPortCandidates() {
-            const listed = parsePortList(urlParams.get("hubPorts") || "");
-            if (listed.length) {
-                return listed;
-            }
-            const from = Math.max(1, Number(urlParams.get("hubFrom") || 321));
-            const to = Math.max(from, Number(urlParams.get("hubTo") || 369));
-            const out = [];
-            for (let p = from; p <= to; p++) {
-                out.push(p);
-            }
-            return out;
-        }
-
-        function defaultHubScanPorts() {
-            const from = Math.max(1, Number(urlParams.get("hubFrom") || 321));
-            const n = defaultHubScanN();
-            const toCap = Number(urlParams.get("hubTo") || 0);
-            const out = [];
-            for (let i = 0; i < n; i++) {
-                const p = from + i;
-                if (toCap > 0 && p > toCap) {
-                    break;
-                }
-                out.push(p);
-            }
-            return out;
-        }
-
-        const HUB_PORT_CACHE_KEY = "mywebrtc_hub_ports_v1";
-
-        function loadHubPortCache() {
-            try {
-                const arr = JSON.parse(localStorage.getItem(HUB_PORT_CACHE_KEY) || "[]");
-                if (!Array.isArray(arr)) {
-                    return [];
-                }
-                return arr.map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0);
-            } catch (e) {
-                return [];
-            }
-        }
-
-        function saveHubPortCache(ports) {
-            try {
-                localStorage.setItem(HUB_PORT_CACHE_KEY, JSON.stringify(ports || []));
-            } catch (e) {}
-        }
-
-        function hubJsonUrl() {
-            try {
-                const base = (appBasePath || "/").replace(/\/?$/, "/");
-                return new URL("hub.json", window.location.origin + base).toString();
-            } catch (e) {
-                return "hub.json";
-            }
-        }
-
-        async function fetchHubJsonPorts() {
-            try {
-                const url = hubJsonUrl() + "?_=" + Date.now();
-                const ctrl = new AbortController();
-                const t = setTimeout(() => ctrl.abort(), 2500);
-                const r = await fetch(url, { cache: "no-store", signal: ctrl.signal });
-                clearTimeout(t);
-                if (!r.ok) {
-                    return [];
-                }
-                const j = await r.json();
-                const arr = Array.isArray(j.ports) ? j.ports : [];
-                return arr.map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0);
-            } catch (e) {
-                return [];
-            }
-        }
-
-        function mergeHubSticky(alive) {
-            for (const p of alive) {
-                hubPortMiss[p] = 0;
-                if (!hubStickyPorts.includes(p)) {
-                    hubStickyPorts.push(p);
-                }
-            }
-            hubStickyPorts.sort((a, b) => a - b);
-            renderPreviewHeaderByPorts(hubStickyPorts);
-            saveHubPortCache(hubStickyPorts);
-        }
-
-        async function resolveHubCandidates() {
-            const manual = parsePortList(urlParams.get("hubPorts") || "");
-            if (manual.length) {
-                return manual;
-            }
-            // 全開要顯式 ?hubScan=1
-            if (urlParams.get("hubScan") === "1") {
-                return defaultHubPortCandidates();
-            }
-            const scanN = defaultHubScanN();
-            const fromJson = await fetchHubJsonPorts();
-            // >10：用 push json；≤10 有 json 也用（才能抓到 345/360）
-            if (fromJson.length > 0) {
-                return fromJson;
-            }
-            const cached = loadHubPortCache();
-            if (cached.length > 0 && cached.length <= scanN) {
-                return cached;
-            }
-            // 預設：只掃 10 埠（321–330），不全開
-            return defaultHubScanPorts();
-        }
-
-        async function discoverHubAlivePorts(onBatch) {
-            const candidates = await resolveHubCandidates();
-            const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1500));
-            const results = await Promise.all(
-                candidates.map(async (port) => {
-                    const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
-                    return ok ? port : null;
-                })
-            );
-            const alive = results.filter((p) => p != null).sort((a, b) => a - b);
-            if (typeof onBatch === "function") {
-                onBatch(alive);
-            }
-            return alive;
-        }
-
         async function syncHubPreviewPorts() {
-            const listed = await fetchHubJsonPorts();
-            if (listed.length) {
-                mergeHubSticky(listed);
-            }
-            const alive = await discoverHubAlivePorts((partial) => {
-                mergeHubSticky(partial);
-            });
-            const aliveSet = new Set(alive);
-            const listedSet = new Set(listed);
-            hubStickyPorts = hubStickyPorts.filter((p) => {
-                if (aliveSet.has(p)) {
-                    return true;
-                }
-                if (listedSet.has(p)) {
-                    return true;
-                }
-                hubPortMiss[p] = (hubPortMiss[p] || 0) + 1;
-                return hubPortMiss[p] < 3;
-            });
-            hubStickyPorts.sort((a, b) => a - b);
-            lastRenderedPreviewKey = "";
-            renderPreviewHeaderByPorts(hubStickyPorts);
-            saveHubPortCache(hubStickyPorts);
+            // 固定 20×20；狀態由内部 tick 更新，這裡只確保格子建好
+            renderFixedHubGrid();
         }
 
         async function buildPreviewHeader() {
             if (isThumbnailMode) {
                 return;
             }
-            let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
-            if (!manual.length && isHubEntry) {
-                const listed = await fetchHubJsonPorts();
-                if (listed.length) {
-                    hubStickyPorts = listed.slice().sort((a, b) => a - b);
-                    lastRenderedPreviewKey = "";
-                    renderPreviewHeaderByPorts(hubStickyPorts);
-                } else if (!hubStickyPorts.length) {
-                    const cached = loadHubPortCache();
-                    if (cached.length) {
-                        hubStickyPorts = cached.slice();
-                        renderPreviewHeaderByPorts(hubStickyPorts);
-                    }
-                }
-                await syncHubPreviewPorts();
+            if (isHubEntry) {
+                renderFixedHubGrid();
                 return;
             }
+            let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (manual.length) {
                 renderPreviewHeaderByPorts(manual);
-                return;
-            }
-            if (isHubEntry) {
-                renderPreviewHeaderByPorts([]);
                 return;
             }
 
