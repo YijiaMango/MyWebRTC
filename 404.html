@@ -99,7 +99,7 @@
             padding: 2px;
         }
         body.hub-entry .preview-card .preview-snap {
-            object-fit: contain;
+            object-fit: fill;
             object-position: center;
             background: #000;
         }
@@ -1131,9 +1131,9 @@
                 previewStrip.appendChild(card);
             }
 
-            // 每秒探 20 格，約 20 秒掃完一輪（不建 400 個 interval）
-            const batch = HUB_COLS;
-            const tickMs = Math.max(400, Number(urlParams.get("hubTickMs") || 1000));
+            // 每輪多探幾格，較快掃到後面的 345/360
+            const batch = Math.max(HUB_COLS, Math.min(15, Number(urlParams.get("hubBatch") || 10)));
+            const tickMs = Math.max(300, Number(urlParams.get("hubTickMs") || 800));
             const tick = () => {
                 for (let b = 0; b < batch; b++) {
                     const idx = (hubProbeCursor + b) % probes.length;
