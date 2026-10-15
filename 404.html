@@ -920,6 +920,9 @@
             if (isThumbnailMode) {
                 return;
             }
+            if (wanActive) {
+                return;
+            }
             remoteVideo.style.opacity = "1";
             freezeFrameCanvas.style.display = "none";
         }
@@ -1952,14 +1955,13 @@
             const port = tdPort || "321";
             const onZrok = /\.share\.zrok\.io$/i.test(window.location.hostname);
 
-            // Zrok web：?port=321 即可（自動 ws=yijiamango321、feed、wan）
             if (!onGithubPages && onZrok) {
                 const wsHostAuto = wsParam || defaultWsHostForPort(port);
+                armWanFallback();
                 beginWatch(wsHostAuto, port, {
                     persist: false,
                     rewriteUrl: false
                 });
-                armWanFallback();
                 return;
             }
 
@@ -1967,21 +1969,21 @@
             if (!onGithubPages) {
                 wsHost = wsParam || window.location.hostname;
                 wsPort = resolveDialPort(tdPort, wsHost);
+                armWanFallback();
                 connect();
                 setTimeout(() => {
                     tryEnterFullscreen();
                 }, 500);
-                armWanFallback();
                 return;
             }
 
             // GitHub Pages 最短：/MyWebRTC/321
             const wsHostAuto = wsParam || defaultWsHostForPort(port);
+            armWanFallback();
             beginWatch(wsHostAuto, port, {
                 persist: Boolean(wsParam),
                 rewriteUrl: false
             });
-            armWanFallback();
         }
 
         function silenceMediaBeforeTeardown() {
@@ -2237,6 +2239,9 @@
         function startMediaWatchdog() {
             clearMediaWatchdog();
             mediaWatchdogTimer = setInterval(() => {
+                if (wanActive) {
+                    return;
+                }
                 const connected = signalingClient?.webSocket?.readyState === WebSocket.OPEN;
                 if (!connected) {
                     // 不自動重連
