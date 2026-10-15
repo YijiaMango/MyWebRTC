@@ -57,20 +57,24 @@
             -webkit-overflow-scrolling: touch;
         }
         body.hub-entry #preview-strip {
-            flex-direction: column;
-            flex-wrap: nowrap;
-            align-items: stretch;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            align-content: start;
             min-height: 100%;
             height: auto;
-            gap: 12px;
-            padding: 12px;
+            gap: 10px;
+            padding: 10px;
+            box-sizing: border-box;
         }
         body.hub-entry .preview-card {
-            flex: 0 0 auto;
+            flex: unset;
             width: 100%;
             max-width: 100%;
             min-width: 0;
-            aspect-ratio: 16 / 9;
+            aspect-ratio: 1 / 1;
+        }
+        body.hub-entry .preview-card .preview-snap {
+            object-fit: cover;
         }
         body.hub-entry .preview-card iframe,
         body.hub-entry .preview-card .preview-snap {
