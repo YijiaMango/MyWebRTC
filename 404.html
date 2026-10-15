@@ -1305,41 +1305,36 @@
             if (manual.length) {
                 return manual;
             }
+            // 全開要顯式 ?hubScan=1
+            if (urlParams.get("hubScan") === "1") {
+                return defaultHubPortCandidates();
+            }
             const scanN = defaultHubScanN();
             const fromJson = await fetchHubJsonPorts();
-            // 有 push json：一律用（含 ≤10；>10 也靠 json，不掃整段）
+            // >10：用 push json；≤10 有 json 也用（才能抓到 345/360）
             if (fromJson.length > 0) {
                 return fromJson;
             }
-            if (urlParams.get("hubScan") === "0") {
-                return defaultHubScanPorts();
+            const cached = loadHubPortCache();
+            if (cached.length > 0 && cached.length <= scanN) {
+                return cached;
             }
-            // 無 json：掃 321–369，discover 裡每次並行 hubScanN（預設 10）
-            return defaultHubPortCandidates();
+            // 預設：只掃 10 埠（321–330），不全開
+            return defaultHubScanPorts();
         }
 
         async function discoverHubAlivePorts(onBatch) {
             const candidates = await resolveHubCandidates();
-            const batchSize = defaultHubScanN();
             const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1500));
-            const alive = [];
-            for (let i = 0; i < candidates.length; i += batchSize) {
-                const batch = candidates.slice(i, i + batchSize);
-                const got = await Promise.all(
-                    batch.map(async (port) => {
-                        const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
-                        return ok ? port : null;
-                    })
-                );
-                for (const p of got) {
-                    if (p != null && !alive.includes(p)) {
-                        alive.push(p);
-                    }
-                }
-                alive.sort((a, b) => a - b);
-                if (typeof onBatch === "function") {
-                    onBatch(alive.slice());
-                }
+            const results = await Promise.all(
+                candidates.map(async (port) => {
+                    const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
+                    return ok ? port : null;
+                })
+            );
+            const alive = results.filter((p) => p != null).sort((a, b) => a - b);
+            if (typeof onBatch === "function") {
+                onBatch(alive);
             }
             return alive;
         }

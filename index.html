@@ -1300,71 +1300,35 @@
             saveHubPortCache(hubStickyPorts);
         }
 
-        async function resolveHubCandidates() {
-            const manual = parsePortList(urlParams.get("hubPorts") || "");
-            if (manual.length) {
-                return manual;
+        async function syncHubPreviewPorts() {
+            const manual = parsePortList(urlParams.get("hubPorts") || urlParams.get("ports") || "");
+            let listed = manual.length ? manual : await fetchHubJsonPorts();
+            if (!listed.length) {
+                listed = loadHubPortCache();
             }
-            const scanN = defaultHubScanN();
-            const fromJson = await fetchHubJsonPorts();
-            // 有 push json：一律用（含 ≤10；>10 也靠 json，不掃整段）
-            if (fromJson.length > 0) {
-                return fromJson;
-            }
-            if (urlParams.get("hubScan") === "0") {
-                return defaultHubScanPorts();
-            }
-            // 無 json：掃 321–369，discover 裡每次並行 hubScanN（預設 10）
-            return defaultHubPortCandidates();
-        }
-
-        async function discoverHubAlivePorts(onBatch) {
-            const candidates = await resolveHubCandidates();
-            const batchSize = defaultHubScanN();
-            const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1500));
-            const alive = [];
-            for (let i = 0; i < candidates.length; i += batchSize) {
-                const batch = candidates.slice(i, i + batchSize);
-                const got = await Promise.all(
-                    batch.map(async (port) => {
-                        const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
-                        return ok ? port : null;
-                    })
-                );
-                for (const p of got) {
-                    if (p != null && !alive.includes(p)) {
-                        alive.push(p);
+            // 可選：?hubScan=1 才探活掃埠；預設不掃描，只信 push 的 hub.json
+            if (urlParams.get("hubScan") === "1" && !manual.length) {
+                const timeoutMs = Math.max(400, Number(urlParams.get("hubProbeMs") || 1500));
+                const batchSize = defaultHubScanN();
+                const candidates = defaultHubPortCandidates();
+                const alive = [];
+                for (let i = 0; i < candidates.length; i += batchSize) {
+                    const batch = candidates.slice(i, i + batchSize);
+                    const got = await Promise.all(
+                        batch.map(async (port) => {
+                            const ok = await probeLiveFeed(defaultFeedForPort(port), timeoutMs);
+                            return ok ? port : null;
+                        })
+                    );
+                    for (const p of got) {
+                        if (p != null && !alive.includes(p)) {
+                            alive.push(p);
+                        }
                     }
                 }
-                alive.sort((a, b) => a - b);
-                if (typeof onBatch === "function") {
-                    onBatch(alive.slice());
-                }
+                listed = alive.sort((a, b) => a - b);
             }
-            return alive;
-        }
-
-        async function syncHubPreviewPorts() {
-            const listed = await fetchHubJsonPorts();
-            if (listed.length) {
-                mergeHubSticky(listed);
-            }
-            const alive = await discoverHubAlivePorts((partial) => {
-                mergeHubSticky(partial);
-            });
-            const aliveSet = new Set(alive);
-            const listedSet = new Set(listed);
-            hubStickyPorts = hubStickyPorts.filter((p) => {
-                if (aliveSet.has(p)) {
-                    return true;
-                }
-                if (listedSet.has(p)) {
-                    return true;
-                }
-                hubPortMiss[p] = (hubPortMiss[p] || 0) + 1;
-                return hubPortMiss[p] < 3;
-            });
-            hubStickyPorts.sort((a, b) => a - b);
+            hubStickyPorts = listed.slice().sort((a, b) => a - b);
             lastRenderedPreviewKey = "";
             renderPreviewHeaderByPorts(hubStickyPorts);
             saveHubPortCache(hubStickyPorts);
@@ -1376,17 +1340,10 @@
             }
             let manual = parsePortList(urlParams.get("ports") || urlParams.get("thumbPorts") || "");
             if (!manual.length && isHubEntry) {
-                const listed = await fetchHubJsonPorts();
-                if (listed.length) {
-                    hubStickyPorts = listed.slice().sort((a, b) => a - b);
-                    lastRenderedPreviewKey = "";
+                const cached = loadHubPortCache();
+                if (cached.length) {
+                    hubStickyPorts = cached.slice();
                     renderPreviewHeaderByPorts(hubStickyPorts);
-                } else if (!hubStickyPorts.length) {
-                    const cached = loadHubPortCache();
-                    if (cached.length) {
-                        hubStickyPorts = cached.slice();
-                        renderPreviewHeaderByPorts(hubStickyPorts);
-                    }
                 }
                 await syncHubPreviewPorts();
                 return;
