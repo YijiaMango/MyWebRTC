@@ -42,9 +42,9 @@
             box-sizing: border-box;
         }
 
-        /* GH entry：整頁由上到下多窗快照 */
+        /* GH entry：20 欄鋪滿視窗，不捲動 */
         body.hub-entry {
-            overflow: auto;
+            overflow: hidden;
         }
         body.hub-entry #preview-header {
             display: block !important;
@@ -53,25 +53,44 @@
             height: 100%;
             border-bottom: 0;
             z-index: 100;
-            overflow-y: auto;
-            -webkit-overflow-scrolling: touch;
+            overflow: hidden;
         }
         body.hub-entry #preview-strip {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            align-content: start;
+            /* 預設 20×20；JS 依實際筆數覆寫 rows，鋪滿視窗不捲 */
+            grid-template-columns: repeat(20, minmax(0, 1fr));
+            grid-template-rows: repeat(20, minmax(0, 1fr));
+            align-content: stretch;
+            width: 100%;
+            height: 100%;
             min-height: 100%;
-            height: auto;
-            gap: 10px;
-            padding: 10px;
+            gap: 1px;
+            padding: 1px;
             box-sizing: border-box;
+            overflow: hidden;
         }
         body.hub-entry .preview-card {
             flex: unset;
             width: 100%;
-            max-width: 100%;
+            height: 100%;
+            max-width: none;
             min-width: 0;
-            aspect-ratio: 1 / 1;
+            min-height: 0;
+            aspect-ratio: unset;
+            border-radius: 0;
+            border-width: 0;
+        }
+        body.hub-entry .preview-card-label {
+            height: 12px;
+            line-height: 12px;
+            font-size: 9px;
+            padding: 0 1px;
+        }
+        body.hub-entry .preview-card .preview-placeholder {
+            font-size: 8px;
+            letter-spacing: 0;
+            text-align: center;
+            padding: 2px;
         }
         body.hub-entry .preview-card .preview-snap {
             object-fit: cover;
@@ -1021,13 +1040,20 @@
 
             clearPreviewSnapTimers();
             previewStrip.innerHTML = "";
+            if (isHubEntry) {
+                const cols = 20;
+                const rows = Math.max(1, Math.min(20, Math.ceil(ports.length / cols)));
+                previewStrip.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+                previewStrip.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+            }
             // 主頁／總覽：只刷 live.jpg 快照，不 iframe、不 WS、不播放
             // 首頁預覽預設 5 秒刷一幀
             const snapMs = Math.max(
                 1000,
                 Number(urlParams.get("snapMs") || (isHubEntry ? 5000 : 3000))
             );
-            for (const port of ports) {
+            const hubPorts = isHubEntry ? ports.slice(0, 20 * 20) : ports;
+            for (const port of hubPorts) {
                 const card = document.createElement("a");
                 card.className = "preview-card";
                 card.href = hubChannelHref(port, false);
