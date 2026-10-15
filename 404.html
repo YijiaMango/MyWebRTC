@@ -547,6 +547,7 @@
         const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
         const previewMissStop = Math.max(5, Number(urlParams.get("thumbMissStop") || 30));
         const previewHardMax = Math.max(previewScanFrom, Number(urlParams.get("thumbMax") || 2000));
+        // hub 結構同步間隔（不是整頁重載）；圖刷另走 snapMs
         const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || (isHubEntry ? 30000 : 5000));
         let hubStickyPorts = [];
         const hubPortMiss = Object.create(null);
@@ -827,6 +828,7 @@
                 return;
             }
             const bootSensors = (ev) => {
+                // 略過連線面板上的點擊
                 const t = ev && ev.target;
                 if (t && typeof t.closest === "function" && t.closest("#connect-panel")) {
                     return;
@@ -1016,7 +1018,7 @@
 
                 const placeholder = document.createElement("div");
                 placeholder.className = "preview-placeholder";
-                placeholder.textContent = "";
+                placeholder.textContent = ""; // 載入中不寫「通道關閉」
 
                 const img = document.createElement("img");
                 img.className = "preview-snap";
@@ -1039,6 +1041,7 @@
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
                 };
+                // 預載成功才換圖；已顯示則失敗保留最後一幀。只有長時間載不到才「通道關閉」
                 const attachSnap = () => {
                     if (!img.isConnected || snapBusy) {
                         return;
@@ -1061,7 +1064,7 @@
                         }
                         failStreak += 1;
                         if (card.classList.contains("has-live")) {
-                            return;
+                            return; // 抓到過就繼續顯示，不要閃關閉
                         }
                         if (failStreak >= 8) {
                             markClosed();
@@ -1069,6 +1072,7 @@
                     };
                     pre.src = url;
                 };
+                // 錯開首載，避免同時打爆連線被誤判關閉
                 const kick = window.setTimeout(attachSnap, (Number(port) % 10) * 150);
                 previewSnapTimers.push(kick);
                 previewSnapTimers.push(setInterval(attachSnap, snapMs));
@@ -1187,6 +1191,7 @@
         }
 
         function defaultHubPortCandidates() {
+            // 與 ShareZrok services.txt 一致：321–369；可用 ?hubPorts= 或 ?hubFrom=&hubTo= 覆寫
             const listed = parsePortList(urlParams.get("hubPorts") || "");
             if (listed.length) {
                 return listed;
@@ -1220,6 +1225,7 @@
         }
 
         async function syncHubPreviewPorts() {
+            // sticky：探活偶發失敗不拆格子，連續 miss 3 次才拿掉 → 首頁不會一直整排重建
             const alive = await discoverHubAlivePorts();
             const aliveSet = new Set(alive);
             for (const p of alive) {
@@ -2060,39 +2066,95 @@
             return base.replace(/^http/i, "ws").replace(/\/$/, "") + "/";
         }
 
+        let wanLastFrameAt = 0;
+        let wanWatchTimer = null;
+
         function paintWanJpeg(buf) {
-            if (wanBusy || !buf) {
+            if (!buf || !wanActive) {
+                return;
+            }
+            const blob =
+                buf instanceof Blob ? buf : new Blob([buf], { type: "image/jpeg" });
+            if (wanBusy) {
                 return;
             }
             wanBusy = true;
-            createImageBitmap(new Blob([buf], { type: "image/jpeg" }))
-                .then((bmp) => {
-                    if (
-                        freezeFrameCanvas.width !== bmp.width ||
-                        freezeFrameCanvas.height !== bmp.height
-                    ) {
-                        freezeFrameCanvas.width = bmp.width;
-                        freezeFrameCanvas.height = bmp.height;
+            const finish = () => {
+                wanBusy = false;
+            };
+            const showImg = () => {
+                if (!wanVideo || !wanActive) {
+                    finish();
+                    return;
+                }
+                const url = URL.createObjectURL(blob);
+                const prev = wanVideo.getAttribute("data-blob");
+                wanVideo.onload = () => {
+                    if (prev) {
+                        try {
+                            URL.revokeObjectURL(prev);
+                        } catch (e) {}
                     }
-                    freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    freezeCtx.drawImage(bmp, 0, 0);
-                    bmp.close();
-                    freezeFrameCanvas.style.display = "block";
-                    remoteVideo.style.opacity = "0";
-                    if (wanVideo) {
-                        wanVideo.classList.remove("show");
-                    }
-                })
-                .catch(() => {})
-                .finally(() => {
-                    wanBusy = false;
-                });
+                    wanVideo.setAttribute("data-blob", url);
+                    wanLastFrameAt = Date.now();
+                    wanVideo.classList.add("show");
+                    try {
+                        freezeFrameCanvas.style.display = "none";
+                        remoteVideo.style.opacity = "0";
+                    } catch (e) {}
+                    finish();
+                };
+                wanVideo.onerror = () => {
+                    try {
+                        URL.revokeObjectURL(url);
+                    } catch (e) {}
+                    finish();
+                };
+                wanVideo.src = url;
+            };
+            if (typeof createImageBitmap === "function") {
+                createImageBitmap(blob)
+                    .then((bmp) => {
+                        if (!wanActive) {
+                            bmp.close();
+                            finish();
+                            return;
+                        }
+                        if (
+                            freezeFrameCanvas.width !== bmp.width ||
+                            freezeFrameCanvas.height !== bmp.height
+                        ) {
+                            freezeFrameCanvas.width = bmp.width;
+                            freezeFrameCanvas.height = bmp.height;
+                        }
+                        freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
+                        freezeCtx.drawImage(bmp, 0, 0);
+                        bmp.close();
+                        wanLastFrameAt = Date.now();
+                        freezeFrameCanvas.style.display = "block";
+                        remoteVideo.style.opacity = "0";
+                        if (wanVideo) {
+                            wanVideo.classList.remove("show");
+                        }
+                        finish();
+                    })
+                    .catch(() => {
+                        showImg();
+                    });
+            } else {
+                showImg();
+            }
         }
 
         function stopWanPipe() {
             wanActive = false;
             wanMode = "";
             wanBusy = false;
+            wanLastFrameAt = 0;
+            if (wanWatchTimer) {
+                clearInterval(wanWatchTimer);
+                wanWatchTimer = null;
+            }
             if (wanTimer) {
                 clearInterval(wanTimer);
                 wanTimer = null;
@@ -2112,14 +2174,21 @@
             }
             if (wanVideo) {
                 wanVideo.classList.remove("show");
+                const prev = wanVideo.getAttribute("data-blob");
+                if (prev) {
+                    try {
+                        URL.revokeObjectURL(prev);
+                    } catch (e) {}
+                    wanVideo.removeAttribute("data-blob");
+                }
                 wanVideo.removeAttribute("src");
             }
         }
 
         function startWanJpgFallback(reason) {
             wanMode = "jpg";
-            log("WAN HTTP live.jpg @" + wanFps + "fps fallback: " + (reason || ""), "warn");
-            setOscHud("外網 live.jpg @" + wanFps + "fps（WS 失敗）");
+            log("WAN HTTP live.jpg fallback: " + (reason || ""), "warn");
+            setOscHud("外網 live.jpg（WS 失敗，約 1fps）");
             if (wanVideo) {
                 wanVideo.classList.add("show");
             }
@@ -2130,27 +2199,30 @@
                 wanVideo.src = liveJpgUrl();
             };
             wanVideo.onload = () => {
+                wanLastFrameAt = Date.now();
                 try {
                     freezeFrameCanvas.style.display = "none";
                     remoteVideo.style.opacity = "0";
                 } catch (e) {}
             };
             kick();
-            const ms = Math.max(16, Math.round(1000 / wanFps));
-            wanTimer = setInterval(kick, ms);
+            if (wanTimer) {
+                clearInterval(wanTimer);
+            }
+            wanTimer = setInterval(kick, 1000);
         }
 
-        function startWanPipe(reason) {
-            if (isHubEntry) {
+        function openWanWs(reason) {
+            if (!wanActive) {
                 return;
             }
-            if (wanActive) {
-                return;
+            if (wanWs) {
+                try {
+                    wanWs.onclose = null;
+                    wanWs.close();
+                } catch (e) {}
+                wanWs = null;
             }
-            wanActive = true;
-            try {
-                showFreezeFrame();
-            } catch (e) {}
             log("WAN WS live @" + wanFps + "fps: " + (reason || ""), "warn");
             setOscHud("外網模式 WS JPEG @" + wanFps + "fps");
             let settled = false;
@@ -2161,6 +2233,7 @@
                 settled = true;
                 if (wanWs) {
                     try {
+                        wanWs.onclose = null;
                         wanWs.close();
                     } catch (e) {}
                     wanWs = null;
@@ -2173,6 +2246,7 @@
                 wanWs.onopen = () => {
                     wanMode = "ws";
                     settled = true;
+                    wanLastFrameAt = Date.now();
                     try {
                         wanWs.send(JSON.stringify({ t: "live", fps: wanFps }));
                     } catch (e) {}
@@ -2182,19 +2256,30 @@
                     if (!wanActive) {
                         return;
                     }
-                    if (ev.data instanceof ArrayBuffer) {
-                        paintWanJpeg(ev.data);
+                    const d = ev.data;
+                    if (d instanceof ArrayBuffer) {
+                        paintWanJpeg(d);
                         return;
                     }
-                    if (typeof ev.data === "string" && ev.data.indexOf("live_ok") >= 0) {
+                    if (d instanceof Blob) {
+                        paintWanJpeg(d);
+                        return;
+                    }
+                    if (typeof d === "string" && d.indexOf("live_ok") >= 0) {
                         setOscHud("外網 WS live @" + wanFps + "fps OK");
                     }
                 };
                 wanWs.onerror = () => failToJpg("ws-error");
                 wanWs.onclose = () => {
-                    if (wanActive && wanMode === "ws") {
-                        failToJpg("ws-close");
+                    if (!wanActive) {
+                        return;
                     }
+                    if (wanMode === "ws") {
+                        wanMode = "";
+                        setTimeout(() => openWanWs("ws-reconnect"), 400);
+                        return;
+                    }
+                    failToJpg("ws-close");
                 };
                 setTimeout(() => {
                     if (wanActive && wanMode !== "ws") {
@@ -2204,6 +2289,33 @@
             } catch (e) {
                 failToJpg(String(e && e.message ? e.message : e));
             }
+        }
+
+        function startWanPipe(reason) {
+            if (isHubEntry) {
+                return;
+            }
+            if (wanActive) {
+                return;
+            }
+            wanActive = true;
+            wanLastFrameAt = Date.now();
+            try {
+                showFreezeFrame();
+            } catch (e) {}
+            openWanWs(reason || "start");
+            if (wanWatchTimer) {
+                clearInterval(wanWatchTimer);
+            }
+            wanWatchTimer = setInterval(() => {
+                if (!wanActive || wanMode !== "ws") {
+                    return;
+                }
+                if (Date.now() - wanLastFrameAt > 2500) {
+                    log("WAN WS silent → reconnect", "warn");
+                    openWanWs("silent");
+                }
+            }, 1000);
         }
 
         function armWanFallback() {
@@ -2392,6 +2504,7 @@
                 oscBtn.remove();
             }
             if (oscBridgeEnabled) {
+                // 點畫面任意處啟用姿態（含 iOS 權限手勢），無按鈕、無 HUD
                 armOscTapToEnable();
             }
 
@@ -2421,6 +2534,7 @@
                 if (previewRefreshTimer) {
                     clearInterval(previewRefreshTimer);
                 }
+                // 只做溫和結構同步；port 集合沒變則 render 直接 no-op，不再強制拆 DOM
                 previewRefreshTimer = setInterval(() => {
                     if (isHubEntry) {
                         syncHubPreviewPorts();

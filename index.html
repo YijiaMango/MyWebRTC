@@ -2066,39 +2066,95 @@
             return base.replace(/^http/i, "ws").replace(/\/$/, "") + "/";
         }
 
+        let wanLastFrameAt = 0;
+        let wanWatchTimer = null;
+
         function paintWanJpeg(buf) {
-            if (wanBusy || !buf) {
+            if (!buf || !wanActive) {
+                return;
+            }
+            const blob =
+                buf instanceof Blob ? buf : new Blob([buf], { type: "image/jpeg" });
+            if (wanBusy) {
                 return;
             }
             wanBusy = true;
-            createImageBitmap(new Blob([buf], { type: "image/jpeg" }))
-                .then((bmp) => {
-                    if (
-                        freezeFrameCanvas.width !== bmp.width ||
-                        freezeFrameCanvas.height !== bmp.height
-                    ) {
-                        freezeFrameCanvas.width = bmp.width;
-                        freezeFrameCanvas.height = bmp.height;
+            const finish = () => {
+                wanBusy = false;
+            };
+            const showImg = () => {
+                if (!wanVideo || !wanActive) {
+                    finish();
+                    return;
+                }
+                const url = URL.createObjectURL(blob);
+                const prev = wanVideo.getAttribute("data-blob");
+                wanVideo.onload = () => {
+                    if (prev) {
+                        try {
+                            URL.revokeObjectURL(prev);
+                        } catch (e) {}
                     }
-                    freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    freezeCtx.drawImage(bmp, 0, 0);
-                    bmp.close();
-                    freezeFrameCanvas.style.display = "block";
-                    remoteVideo.style.opacity = "0";
-                    if (wanVideo) {
-                        wanVideo.classList.remove("show");
-                    }
-                })
-                .catch(() => {})
-                .finally(() => {
-                    wanBusy = false;
-                });
+                    wanVideo.setAttribute("data-blob", url);
+                    wanLastFrameAt = Date.now();
+                    wanVideo.classList.add("show");
+                    try {
+                        freezeFrameCanvas.style.display = "none";
+                        remoteVideo.style.opacity = "0";
+                    } catch (e) {}
+                    finish();
+                };
+                wanVideo.onerror = () => {
+                    try {
+                        URL.revokeObjectURL(url);
+                    } catch (e) {}
+                    finish();
+                };
+                wanVideo.src = url;
+            };
+            if (typeof createImageBitmap === "function") {
+                createImageBitmap(blob)
+                    .then((bmp) => {
+                        if (!wanActive) {
+                            bmp.close();
+                            finish();
+                            return;
+                        }
+                        if (
+                            freezeFrameCanvas.width !== bmp.width ||
+                            freezeFrameCanvas.height !== bmp.height
+                        ) {
+                            freezeFrameCanvas.width = bmp.width;
+                            freezeFrameCanvas.height = bmp.height;
+                        }
+                        freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
+                        freezeCtx.drawImage(bmp, 0, 0);
+                        bmp.close();
+                        wanLastFrameAt = Date.now();
+                        freezeFrameCanvas.style.display = "block";
+                        remoteVideo.style.opacity = "0";
+                        if (wanVideo) {
+                            wanVideo.classList.remove("show");
+                        }
+                        finish();
+                    })
+                    .catch(() => {
+                        showImg();
+                    });
+            } else {
+                showImg();
+            }
         }
 
         function stopWanPipe() {
             wanActive = false;
             wanMode = "";
             wanBusy = false;
+            wanLastFrameAt = 0;
+            if (wanWatchTimer) {
+                clearInterval(wanWatchTimer);
+                wanWatchTimer = null;
+            }
             if (wanTimer) {
                 clearInterval(wanTimer);
                 wanTimer = null;
@@ -2118,14 +2174,21 @@
             }
             if (wanVideo) {
                 wanVideo.classList.remove("show");
+                const prev = wanVideo.getAttribute("data-blob");
+                if (prev) {
+                    try {
+                        URL.revokeObjectURL(prev);
+                    } catch (e) {}
+                    wanVideo.removeAttribute("data-blob");
+                }
                 wanVideo.removeAttribute("src");
             }
         }
 
         function startWanJpgFallback(reason) {
             wanMode = "jpg";
-            log("WAN HTTP live.jpg @" + wanFps + "fps fallback: " + (reason || ""), "warn");
-            setOscHud("外網 live.jpg @" + wanFps + "fps（WS 失敗）");
+            log("WAN HTTP live.jpg fallback: " + (reason || ""), "warn");
+            setOscHud("外網 live.jpg（WS 失敗，約 1fps）");
             if (wanVideo) {
                 wanVideo.classList.add("show");
             }
@@ -2136,27 +2199,30 @@
                 wanVideo.src = liveJpgUrl();
             };
             wanVideo.onload = () => {
+                wanLastFrameAt = Date.now();
                 try {
                     freezeFrameCanvas.style.display = "none";
                     remoteVideo.style.opacity = "0";
                 } catch (e) {}
             };
             kick();
-            const ms = Math.max(16, Math.round(1000 / wanFps));
-            wanTimer = setInterval(kick, ms);
+            if (wanTimer) {
+                clearInterval(wanTimer);
+            }
+            wanTimer = setInterval(kick, 1000);
         }
 
-        function startWanPipe(reason) {
-            if (isHubEntry) {
+        function openWanWs(reason) {
+            if (!wanActive) {
                 return;
             }
-            if (wanActive) {
-                return;
+            if (wanWs) {
+                try {
+                    wanWs.onclose = null;
+                    wanWs.close();
+                } catch (e) {}
+                wanWs = null;
             }
-            wanActive = true;
-            try {
-                showFreezeFrame();
-            } catch (e) {}
             log("WAN WS live @" + wanFps + "fps: " + (reason || ""), "warn");
             setOscHud("外網模式 WS JPEG @" + wanFps + "fps");
             let settled = false;
@@ -2167,6 +2233,7 @@
                 settled = true;
                 if (wanWs) {
                     try {
+                        wanWs.onclose = null;
                         wanWs.close();
                     } catch (e) {}
                     wanWs = null;
@@ -2179,6 +2246,7 @@
                 wanWs.onopen = () => {
                     wanMode = "ws";
                     settled = true;
+                    wanLastFrameAt = Date.now();
                     try {
                         wanWs.send(JSON.stringify({ t: "live", fps: wanFps }));
                     } catch (e) {}
@@ -2188,19 +2256,30 @@
                     if (!wanActive) {
                         return;
                     }
-                    if (ev.data instanceof ArrayBuffer) {
-                        paintWanJpeg(ev.data);
+                    const d = ev.data;
+                    if (d instanceof ArrayBuffer) {
+                        paintWanJpeg(d);
                         return;
                     }
-                    if (typeof ev.data === "string" && ev.data.indexOf("live_ok") >= 0) {
+                    if (d instanceof Blob) {
+                        paintWanJpeg(d);
+                        return;
+                    }
+                    if (typeof d === "string" && d.indexOf("live_ok") >= 0) {
                         setOscHud("外網 WS live @" + wanFps + "fps OK");
                     }
                 };
                 wanWs.onerror = () => failToJpg("ws-error");
                 wanWs.onclose = () => {
-                    if (wanActive && wanMode === "ws") {
-                        failToJpg("ws-close");
+                    if (!wanActive) {
+                        return;
                     }
+                    if (wanMode === "ws") {
+                        wanMode = "";
+                        setTimeout(() => openWanWs("ws-reconnect"), 400);
+                        return;
+                    }
+                    failToJpg("ws-close");
                 };
                 setTimeout(() => {
                     if (wanActive && wanMode !== "ws") {
@@ -2210,6 +2289,33 @@
             } catch (e) {
                 failToJpg(String(e && e.message ? e.message : e));
             }
+        }
+
+        function startWanPipe(reason) {
+            if (isHubEntry) {
+                return;
+            }
+            if (wanActive) {
+                return;
+            }
+            wanActive = true;
+            wanLastFrameAt = Date.now();
+            try {
+                showFreezeFrame();
+            } catch (e) {}
+            openWanWs(reason || "start");
+            if (wanWatchTimer) {
+                clearInterval(wanWatchTimer);
+            }
+            wanWatchTimer = setInterval(() => {
+                if (!wanActive || wanMode !== "ws") {
+                    return;
+                }
+                if (Date.now() - wanLastFrameAt > 2500) {
+                    log("WAN WS silent → reconnect", "warn");
+                    openWanWs("silent");
+                }
+            }, 1000);
         }
 
         function armWanFallback() {
