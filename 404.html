@@ -114,7 +114,7 @@
             display: none !important;
             background: #111;
             border: 0;
-            transform: scaleX(var(--x-flip));
+            /* JPEG 來源已 FLIP；勿再 scaleX 雙翻 */
         }
         .preview-card .preview-snap.is-live {
             display: block !important;
@@ -296,7 +296,7 @@
             background: #000;
             display: none;
             z-index: 15;
-            transform: scaleX(var(--x-flip));
+            /* WAN JPEG 來源已 FLIP */
         }
 
         #wanVideo.show {
