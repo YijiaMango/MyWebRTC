@@ -147,8 +147,7 @@
             display: block;
             background: #000;
             object-fit: fill;
-            transform: scaleX(-1);
-            /* 畫面一律走 canvas；video 只當取樣源，斷線才不會黑 */
+            /* 與 TD TOP 同向，不再 CSS 鏡射（避免 WAN JPEG / canvas 再翻一次） */
             opacity: 0;
             pointer-events: none;
         }
@@ -233,7 +232,6 @@
             background: #000;
             display: none;
             z-index: 15;
-            transform: scaleX(-1);
         }
 
         #wanVideo.show {
@@ -838,11 +836,8 @@
                 freezeFrameCanvas.width = remoteVideo.videoWidth;
                 freezeFrameCanvas.height = remoteVideo.videoHeight;
             }
-            freezeCtx.save();
-            freezeCtx.translate(freezeFrameCanvas.width, 0);
-            freezeCtx.scale(-1, 1);
+            freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
             freezeCtx.drawImage(remoteVideo, 0, 0, freezeFrameCanvas.width, freezeFrameCanvas.height);
-            freezeCtx.restore();
             hasFrozenFrame = true;
             lastSnapshotAt = Date.now();
             return true;
@@ -1896,8 +1891,6 @@
                         freezeFrameCanvas.height = bmp.height;
                     }
                     freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
-                    freezeCtx.translate(bmp.width, 0);
-                    freezeCtx.scale(-1, 1);
                     freezeCtx.drawImage(bmp, 0, 0);
                     bmp.close();
                     freezeFrameCanvas.style.display = "block";
