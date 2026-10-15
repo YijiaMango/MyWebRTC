@@ -1057,6 +1057,9 @@
 
             const ports = fixedHubPorts();
             const probes = [];
+            // zrok free-tier 易 429：全 hub 同時只許 1 個 in-flight，失敗要冷卻
+            let hubProbeInflight = 0;
+            let hubProbeCoolUntil = 0;
             for (let i = 0; i < ports.length; i++) {
                 const port = ports[i];
                 const card = document.createElement("a");
@@ -1080,8 +1083,10 @@
                 const feed = defaultFeedForPort(port).replace(/\/$/, "");
                 let snapBusy = false;
                 let failStreak = 0;
+                let lastOkAt = 0;
                 const showLive = () => {
                     failStreak = 0;
+                    lastOkAt = Date.now();
                     placeholder.textContent = "ｘ";
                     img.classList.add("is-live");
                     card.classList.add("has-live");
@@ -1096,13 +1101,25 @@
                 };
                 const attachSnap = () => {
                     if (!img.isConnected || snapBusy) {
-                        return;
+                        return false;
+                    }
+                    if (hubProbeInflight > 0 || Date.now() < hubProbeCoolUntil) {
+                        return false;
+                    }
+                    // 已有畫面：慢刷，少打 zrok
+                    if (card.classList.contains("has-live") && Date.now() - lastOkAt < 10000) {
+                        return false;
                     }
                     snapBusy = true;
+                    hubProbeInflight += 1;
                     const url = feed + "/live.jpg?_=" + Date.now();
                     const pre = new Image();
-                    pre.onload = () => {
+                    const done = () => {
                         snapBusy = false;
+                        hubProbeInflight = Math.max(0, hubProbeInflight - 1);
+                    };
+                    pre.onload = () => {
+                        done();
                         if (!img.isConnected) {
                             return;
                         }
@@ -1110,16 +1127,20 @@
                         showLive();
                     };
                     pre.onerror = () => {
-                        snapBusy = false;
+                        done();
                         if (!img.isConnected) {
                             return;
                         }
+                        // 可能是 429：全 hub 冷卻，避免全滅
+                        hubProbeCoolUntil = Date.now() + 8000;
                         failStreak += 1;
-                        if (failStreak >= 2) {
+                        // 已顯示過的保留最後一幀；未見過的多失敗幾次才 ｘ
+                        if (!card.classList.contains("has-live") && failStreak >= 6) {
                             showDown();
                         }
                     };
                     pre.src = url;
+                    return true;
                 };
                 probes.push(attachSnap);
 
@@ -1132,15 +1153,19 @@
                 previewStrip.appendChild(card);
             }
 
-            // 每輪多探幾格，較快掃到後面的 345/360
-            const batch = Math.max(HUB_COLS, Math.min(15, Number(urlParams.get("hubBatch") || 10)));
-            const tickMs = Math.max(300, Number(urlParams.get("hubTickMs") || 800));
+            // 每次只探 1 格、約 1.2s 一格 → 50 格約 1 分鐘一輪，避開 zrok 429
+            const tickMs = Math.max(800, Number(urlParams.get("hubTickMs") || 1200));
             const tick = () => {
-                for (let b = 0; b < batch; b++) {
-                    const idx = (hubProbeCursor + b) % probes.length;
-                    probes[idx]();
+                if (Date.now() < hubProbeCoolUntil || hubProbeInflight > 0) {
+                    return;
                 }
-                hubProbeCursor = (hubProbeCursor + batch) % probes.length;
+                for (let n = 0; n < probes.length; n++) {
+                    const idx = hubProbeCursor % probes.length;
+                    hubProbeCursor = (hubProbeCursor + 1) % probes.length;
+                    if (probes[idx]()) {
+                        break;
+                    }
+                }
             };
             tick();
             previewSnapTimers.push(setInterval(tick, tickMs));
