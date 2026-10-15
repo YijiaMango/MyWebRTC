@@ -1062,7 +1062,7 @@
 
                 const placeholder = document.createElement("div");
                 placeholder.className = "preview-placeholder";
-                placeholder.textContent = "停用";
+                placeholder.textContent = "ｘ";
 
                 const img = document.createElement("img");
                 img.className = "preview-snap";
@@ -1076,13 +1076,13 @@
                 let failStreak = 0;
                 const showLive = () => {
                     failStreak = 0;
-                    placeholder.textContent = "停用";
+                    placeholder.textContent = "ｘ";
                     img.classList.add("is-live");
                     card.classList.add("has-live");
                     card.classList.remove("is-down");
                 };
                 const showDown = () => {
-                    placeholder.textContent = "停用";
+                    placeholder.textContent = "ｘ";
                     img.removeAttribute("src");
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
@@ -1179,7 +1179,7 @@
 
                 const placeholder = document.createElement("div");
                 placeholder.className = "preview-placeholder";
-                placeholder.textContent = "停用";
+                placeholder.textContent = "ｘ";
 
                 const img = document.createElement("img");
                 img.className = "preview-snap";
@@ -1196,7 +1196,7 @@
                     card.classList.add("has-live");
                 };
                 const markClosed = () => {
-                    placeholder.textContent = "停用";
+                    placeholder.textContent = "ｘ";
                     img.removeAttribute("src");
                     img.classList.remove("is-live");
                     card.classList.remove("has-live");
