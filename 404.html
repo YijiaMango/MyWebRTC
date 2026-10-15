@@ -711,13 +711,8 @@
             };
         }
 
-        function setOscHud(text) {
-            const el = document.getElementById("osc-hud");
-            if (!el || !oscBridgeEnabled) {
-                return;
-            }
-            el.hidden = false;
-            el.textContent = text;
+        function setOscHud(_text) {
+            // 畫面保持乾淨：不顯示 OSC HUD
         }
 
         function flushOscPayload() {
@@ -814,13 +809,27 @@
             window.addEventListener("deviceorientation", onDeviceOrientation, true);
             window.addEventListener("devicemotion", onDeviceMotion, true);
             oscSensorsLive = true;
-            const btn = document.getElementById("osc-enable-btn");
-            if (btn) {
-                btn.hidden = true;
-            }
-            setOscHud("姿態感測已開，等待 DataChannel…");
             log("DeviceOrientation / DeviceMotion 已啟用", "success");
             return true;
+        }
+
+        function armOscTapToEnable() {
+            if (!oscBridgeEnabled || oscSensorsLive) {
+                return;
+            }
+            const bootSensors = (ev) => {
+                const t = ev && ev.target;
+                if (t && typeof t.closest === "function" && t.closest("#connect-panel")) {
+                    return;
+                }
+                enableMotionSensors();
+                document.removeEventListener("pointerdown", bootSensors, true);
+                document.removeEventListener("click", bootSensors, true);
+                document.removeEventListener("touchstart", bootSensors, true);
+            };
+            document.addEventListener("pointerdown", bootSensors, { capture: true });
+            document.addEventListener("click", bootSensors, { capture: true });
+            document.addEventListener("touchstart", bootSensors, { capture: true });
         }
 
         function needsMotionPermissionPrompt() {
@@ -2291,37 +2300,14 @@
 
             const oscHud = document.getElementById("osc-hud");
             const oscBtn = document.getElementById("osc-enable-btn");
-            if (!oscBridgeEnabled) {
-                if (oscHud) {
-                    oscHud.remove();
-                }
-                if (oscBtn) {
-                    oscBtn.remove();
-                }
-            } else {
-                if (oscHud) {
-                    oscHud.hidden = false;
-                    oscHud.textContent = "OSC 橋接待命";
-                }
-                if (oscBtn) {
-                    if (needsMotionPermissionPrompt()) {
-                        oscBtn.hidden = false;
-                        oscBtn.addEventListener("click", (ev) => {
-                            ev.stopPropagation();
-                            enableMotionSensors();
-                        });
-                    } else {
-                        oscBtn.hidden = true;
-                        // 桌面 / 不需授權：第一次點畫面時掛上 listener
-                        const bootSensors = () => {
-                            enableMotionSensors();
-                            document.removeEventListener("click", bootSensors, true);
-                            document.removeEventListener("touchstart", bootSensors, true);
-                        };
-                        document.addEventListener("click", bootSensors, { capture: true, once: true });
-                        document.addEventListener("touchstart", bootSensors, { capture: true, once: true });
-                    }
-                }
+            if (oscHud) {
+                oscHud.remove();
+            }
+            if (oscBtn) {
+                oscBtn.remove();
+            }
+            if (oscBridgeEnabled) {
+                armOscTapToEnable();
             }
 
             if (isRootOverviewPage || isHubEntry) {
