@@ -57,8 +57,9 @@
         }
         body.hub-entry #preview-strip {
             display: grid;
-            grid-template-columns: repeat(20, minmax(0, 1fr));
-            grid-template-rows: repeat(20, minmax(0, 1fr));
+            /* 預設 10×8（320–399）；JS 會覆寫 */
+            grid-template-columns: repeat(10, minmax(0, 1fr));
+            grid-template-rows: repeat(8, minmax(0, 1fr));
             align-content: stretch;
             width: 100%;
             height: 100%;
@@ -583,9 +584,11 @@
         const previewHardMax = Math.max(previewScanFrom, Number(urlParams.get("thumbMax") || 2000));
         // hub 結構同步間隔（不是整頁重載）；圖刷另走 snapMs
         const previewRefreshMs = Number(urlParams.get("thumbRefreshMs") || (isHubEntry ? 30000 : 5000));
-        const HUB_COLS = 20;
-        const HUB_ROWS = 20;
-        const HUB_SLOTS = HUB_COLS * HUB_ROWS;
+        const HUB_FROM = Math.max(1, Number(urlParams.get("hubFrom") || 320));
+        const HUB_TO = Math.max(HUB_FROM, Number(urlParams.get("hubTo") || 399));
+        const HUB_COLS = Math.max(1, Number(urlParams.get("hubCols") || 10));
+        const HUB_SLOTS = HUB_TO - HUB_FROM + 1;
+        const HUB_ROWS = Math.max(1, Math.ceil(HUB_SLOTS / HUB_COLS));
         let hubGridBuilt = false;
         let hubProbeCursor = 0;
         const signalPollMs = Number(urlParams.get("signalPollMs") ?? 250);
@@ -1031,23 +1034,25 @@
         }
 
         function fixedHubPorts() {
-            const from = Math.max(1, Number(urlParams.get("hubFrom") || 321));
             const out = [];
-            for (let i = 0; i < HUB_SLOTS; i++) {
-                out.push(from + i);
+            for (let p = HUB_FROM; p <= HUB_TO; p++) {
+                out.push(p);
             }
             return out;
         }
 
         function renderFixedHubGrid() {
-            if (hubGridBuilt && lastRenderedPreviewKey === "hub|20x20") {
+            const gridKey = `hub|${HUB_FROM}-${HUB_TO}|${HUB_COLS}x${HUB_ROWS}`;
+            if (hubGridBuilt && lastRenderedPreviewKey === gridKey) {
                 return;
             }
             hubGridBuilt = true;
-            lastRenderedPreviewKey = "hub|20x20";
+            lastRenderedPreviewKey = gridKey;
             clearPreviewSnapTimers();
             previewStrip.innerHTML = "";
             hubProbeCursor = 0;
+            previewStrip.style.gridTemplateColumns = `repeat(${HUB_COLS}, minmax(0, 1fr))`;
+            previewStrip.style.gridTemplateRows = `repeat(${HUB_ROWS}, minmax(0, 1fr))`;
 
             const ports = fixedHubPorts();
             const probes = [];
