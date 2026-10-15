@@ -435,11 +435,13 @@
         // ?osc=0 關閉；預設開（thumb/overview/入口 除外）
         const oscBridgeEnabled =
             urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
-        // 外網：Zrok 只通 HTTP/WSS，WebRTC UDP 常失敗 → live.jpg 備援
+        // 外網：Zrok 只通 HTTP/WSS，WebRTC UDP 常失敗 → WS JPEG @30fps（fallback live.jpg）
         const feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
+        const wanFps = Math.max(15, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
         const forceWan =
             urlParams.get("wan") === "1" ||
             urlParams.get("pipe") === "http" ||
+            urlParams.get("pipe") === "ws" ||
             /\.share\.zrok\.io$/i.test(window.location.hostname);
         const previewScanFrom = Number(urlParams.get("thumbFrom") || 301);
         const previewScanTo = Number(urlParams.get("thumbTo") || 0);
@@ -468,7 +470,10 @@
         let latestMotion = null;
         let lastOscHudAt = 0;
         let wanTimer = null;
+        let wanWs = null;
         let wanActive = false;
+        let wanBusy = false;
+        let wanMode = ""; // "ws" | "jpg"
         const wanVideo = document.getElementById("wanVideo");
 
         function linkStatusName() {
@@ -1733,11 +1738,62 @@
             return base.replace(/\/$/, "") + "/live.jpg?_=" + Date.now();
         }
 
+        function liveWsUrl() {
+            const base = feedBase || window.location.origin;
+            return base.replace(/^http/i, "ws").replace(/\/$/, "") + "/";
+        }
+
+        function paintWanJpeg(buf) {
+            if (wanBusy || !buf) {
+                return;
+            }
+            wanBusy = true;
+            createImageBitmap(new Blob([buf], { type: "image/jpeg" }))
+                .then((bmp) => {
+                    if (
+                        freezeFrameCanvas.width !== bmp.width ||
+                        freezeFrameCanvas.height !== bmp.height
+                    ) {
+                        freezeFrameCanvas.width = bmp.width;
+                        freezeFrameCanvas.height = bmp.height;
+                    }
+                    freezeCtx.setTransform(1, 0, 0, 1, 0, 0);
+                    freezeCtx.translate(bmp.width, 0);
+                    freezeCtx.scale(-1, 1);
+                    freezeCtx.drawImage(bmp, 0, 0);
+                    bmp.close();
+                    freezeFrameCanvas.style.display = "block";
+                    remoteVideo.style.opacity = "0";
+                    if (wanVideo) {
+                        wanVideo.classList.remove("show");
+                    }
+                })
+                .catch(() => {})
+                .finally(() => {
+                    wanBusy = false;
+                });
+        }
+
         function stopWanPipe() {
             wanActive = false;
+            wanMode = "";
+            wanBusy = false;
             if (wanTimer) {
                 clearInterval(wanTimer);
                 wanTimer = null;
+            }
+            if (wanWs) {
+                try {
+                    if (wanWs.readyState === WebSocket.OPEN) {
+                        wanWs.send(JSON.stringify({ t: "live_off" }));
+                    }
+                    wanWs.onopen = null;
+                    wanWs.onmessage = null;
+                    wanWs.onerror = null;
+                    wanWs.onclose = null;
+                    wanWs.close();
+                } catch (e) {}
+                wanWs = null;
             }
             if (wanVideo) {
                 wanVideo.classList.remove("show");
@@ -1745,22 +1801,15 @@
             }
         }
 
-        function startWanPipe(reason) {
-            if (!wanVideo || isThumbnailMode || isHubEntry) {
-                return;
+        function startWanJpgFallback(reason) {
+            wanMode = "jpg";
+            log("WAN HTTP live.jpg @" + wanFps + "fps fallback: " + (reason || ""), "warn");
+            setOscHud("外網 live.jpg @" + wanFps + "fps（WS 失敗）");
+            if (wanVideo) {
+                wanVideo.classList.add("show");
             }
-            if (wanActive) {
-                return;
-            }
-            wanActive = true;
-            log("WAN HTTP live.jpg: " + (reason || ""), "warn");
-            setOscHud("外網模式 live.jpg（經 Zrok HTTP）");
-            try {
-                showFreezeFrame();
-            } catch (e) {}
-            wanVideo.classList.add("show");
             const kick = () => {
-                if (!wanActive) {
+                if (!wanActive || wanMode !== "jpg" || !wanVideo) {
                     return;
                 }
                 wanVideo.src = liveJpgUrl();
@@ -1772,7 +1821,74 @@
                 } catch (e) {}
             };
             kick();
-            wanTimer = setInterval(kick, 100);
+            const ms = Math.max(16, Math.round(1000 / wanFps));
+            wanTimer = setInterval(kick, ms);
+        }
+
+        function startWanPipe(reason) {
+            if (isThumbnailMode || isHubEntry) {
+                return;
+            }
+            if (wanActive) {
+                return;
+            }
+            wanActive = true;
+            try {
+                showFreezeFrame();
+            } catch (e) {}
+            log("WAN WS live @" + wanFps + "fps: " + (reason || ""), "warn");
+            setOscHud("外網模式 WS JPEG @" + wanFps + "fps");
+            let settled = false;
+            const failToJpg = (why) => {
+                if (settled || !wanActive) {
+                    return;
+                }
+                settled = true;
+                if (wanWs) {
+                    try {
+                        wanWs.close();
+                    } catch (e) {}
+                    wanWs = null;
+                }
+                startWanJpgFallback(why);
+            };
+            try {
+                wanWs = new WebSocket(liveWsUrl());
+                wanWs.binaryType = "arraybuffer";
+                wanWs.onopen = () => {
+                    wanMode = "ws";
+                    settled = true;
+                    try {
+                        wanWs.send(JSON.stringify({ t: "live", fps: wanFps }));
+                    } catch (e) {}
+                    log("WAN WS open → live @" + wanFps + "fps", "ok");
+                };
+                wanWs.onmessage = (ev) => {
+                    if (!wanActive) {
+                        return;
+                    }
+                    if (ev.data instanceof ArrayBuffer) {
+                        paintWanJpeg(ev.data);
+                        return;
+                    }
+                    if (typeof ev.data === "string" && ev.data.indexOf("live_ok") >= 0) {
+                        setOscHud("外網 WS live @" + wanFps + "fps OK");
+                    }
+                };
+                wanWs.onerror = () => failToJpg("ws-error");
+                wanWs.onclose = () => {
+                    if (wanActive && wanMode === "ws") {
+                        failToJpg("ws-close");
+                    }
+                };
+                setTimeout(() => {
+                    if (wanActive && wanMode !== "ws") {
+                        failToJpg("ws-timeout");
+                    }
+                }, 2500);
+            } catch (e) {
+                failToJpg(String(e && e.message ? e.message : e));
+            }
         }
 
         function armWanFallback() {
