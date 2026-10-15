@@ -476,14 +476,24 @@
         // ?osc=0 關閉；預設開（thumb/overview/入口 除外）
         const oscBridgeEnabled =
             urlParams.get("osc") !== "0" && !isThumbnailMode && !isRootOverviewPage && !isHubEntry;
-        // 外網：Zrok 只通 HTTP/WSS，WebRTC UDP 常失敗 → WS JPEG @30fps（fallback live.jpg）
-        const feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
+        // 外網：短網址 /MyWebRTC/321 預設走 reserved Zrok（可 ?ws= / ?feed= 覆寫）
+        const DEFAULT_FEED_HOST = "yijiamango5757.share.zrok.io";
+        function defaultWsHostForPort(port) {
+            const p = String(port || "321").replace(/\D/g, "") || "321";
+            return `yijiamango${p}.share.zrok.io`;
+        }
+        let feedBase = (urlParams.get("feed") || "").trim().replace(/\/$/, "");
+        if (!feedBase && onGithubPagesEarly && !isHubEntry) {
+            feedBase = "https://" + DEFAULT_FEED_HOST;
+        }
         const wanFps = Math.max(15, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
+        // GH 通道短網址預設外網；?wan=0 可關
         const forceWan =
             urlParams.get("wan") === "1" ||
             urlParams.get("pipe") === "http" ||
             urlParams.get("pipe") === "ws" ||
-            /\.share\.zrok\.io$/i.test(window.location.hostname);
+            /\.share\.zrok\.io$/i.test(window.location.hostname) ||
+            (onGithubPagesEarly && !isHubEntry && urlParams.get("wan") !== "0");
         const previewScanFrom = Number(urlParams.get("thumbFrom") || 301);
         const previewScanTo = Number(urlParams.get("thumbTo") || 0);
         const previewScanChunk = Math.max(5, Number(urlParams.get("thumbChunk") || 40));
@@ -1741,36 +1751,14 @@
                 return;
             }
 
-            // GitHub Pages 通道頁：/321 或 /port/321
-            if (wsParam) {
-                beginWatch(wsParam, tdPort || "321", {
-                    persist: true,
-                    rewriteUrl: false
-                });
-                armWanFallback();
-                return;
-            }
-
-            let saved = "";
-            try {
-                saved = localStorage.getItem(LS_WS) || "";
-            } catch (e) {}
-            if (saved) {
-                beginWatch(saved, tdPort || localStorage.getItem(LS_PORT) || "321", {
-                    persist: false,
-                    rewriteUrl: true
-                });
-                armWanFallback();
-                return;
-            }
-            showConnectPanel(
-                "通道 " + (tdPort || "321") + "：請填 Signaling Host（zrok / tunnel）。\n" +
-                "通用網址格式：/MyWebRTC/" + (tdPort || "321")
-            );
-            const portInput = document.getElementById("connect-port");
-            if (portInput) {
-                portInput.value = tdPort || "321";
-            }
+            // GitHub Pages 短網址 /321：預設 yijiamango{port} + feed（足夠外網）
+            const port = tdPort || "321";
+            const wsHostAuto = wsParam || defaultWsHostForPort(port);
+            beginWatch(wsHostAuto, port, {
+                persist: Boolean(wsParam),
+                rewriteUrl: false
+            });
+            armWanFallback();
         }
 
         function silenceMediaBeforeTeardown() {
