@@ -568,7 +568,8 @@
         if (!feedBase && !isHubEntry && (onGithubPagesEarly || (onZrokHost && channelPortForFeed))) {
             feedBase = defaultFeedForPort(channelPortForFeed);
         }
-        const wanFps = Math.max(15, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
+        // 頻道串流最低 30fps（可 ?fps=45/60）
+        const wanFps = Math.max(30, Math.min(60, Number(urlParams.get("fps") || 30) || 30));
         // 頻道頁預設外網；hub 首頁不進 WAN
         const forceWan =
             !isHubEntry &&
@@ -1020,9 +1021,9 @@
             q.set("ws", ws);
             q.set("wan", "1");
             q.set("feed", feed);
+            q.set("fps", String(urlParams.get("fps") || (forThumb ? 10 : 30)));
             if (forThumb) {
                 q.set("thumb", "1");
-                q.set("fps", String(urlParams.get("thumbFps") || 10));
                 q.set("osc", "0");
             }
             // GH Pages SPA：/321?... ；本機 root：/?port=
@@ -2166,19 +2167,27 @@
 
         let wanLastFrameAt = 0;
         let wanWatchTimer = null;
+        let wanPendingJpeg = null; // 忙時只留最新一幀，維持視覺 fps
 
         function paintWanJpeg(buf) {
             if (!buf || !wanActive) {
                 return;
             }
-            const blob =
-                buf instanceof Blob ? buf : new Blob([buf], { type: "image/jpeg" });
             if (wanBusy) {
+                wanPendingJpeg = buf;
                 return;
             }
             wanBusy = true;
+            wanPendingJpeg = null;
+            const blob =
+                buf instanceof Blob ? buf : new Blob([buf], { type: "image/jpeg" });
             const finish = () => {
                 wanBusy = false;
+                if (wanPendingJpeg && wanActive) {
+                    const next = wanPendingJpeg;
+                    wanPendingJpeg = null;
+                    paintWanJpeg(next);
+                }
             };
             const showImg = () => {
                 if (!wanVideo || !wanActive) {
@@ -2216,6 +2225,13 @@
                     .then((bmp) => {
                         if (!wanActive) {
                             bmp.close();
+                            finish();
+                            return;
+                        }
+                        // WebRTC 已上線就不畫 WAN，避免搶畫面
+                        if (hasLiveVideo()) {
+                            bmp.close();
+                            stopWanPipe();
                             finish();
                             return;
                         }
@@ -2286,14 +2302,19 @@
         }
 
         function startWanJpgFallback(reason) {
+            // 僅短暫頂圖；持續重試 WS，頻道頁不要卡在 1fps
             wanMode = "jpg";
-            log("WAN HTTP live.jpg fallback: " + (reason || ""), "warn");
-            setOscHud("外網 live.jpg（WS 失敗，約 1fps）");
+            log("WAN HTTP live.jpg bridge: " + (reason || ""), "warn");
+            setOscHud("外網重連中…（目標 " + wanFps + "fps）");
             if (wanVideo) {
                 wanVideo.classList.add("show");
             }
             const kick = () => {
                 if (!wanActive || wanMode !== "jpg" || !wanVideo) {
+                    return;
+                }
+                if (hasLiveVideo()) {
+                    stopWanPipe();
                     return;
                 }
                 wanVideo.src = liveJpgUrl();
@@ -2309,11 +2330,21 @@
             if (wanTimer) {
                 clearInterval(wanTimer);
             }
-            wanTimer = setInterval(kick, 1000);
+            // 盡量高刷；HTTP 拉不到 30 也比 1fps 好，同時下面會把 WS 拉回來
+            wanTimer = setInterval(kick, Math.max(33, Math.floor(1000 / wanFps)));
+            setTimeout(() => {
+                if (wanActive && wanMode === "jpg" && !hasLiveVideo()) {
+                    openWanWs("jpg-retry-ws");
+                }
+            }, 600);
         }
 
         function openWanWs(reason) {
             if (!wanActive) {
+                return;
+            }
+            if (hasLiveVideo()) {
+                stopWanPipe();
                 return;
             }
             if (wanWs) {
@@ -2324,9 +2355,9 @@
                 wanWs = null;
             }
             log("WAN WS live @" + wanFps + "fps: " + (reason || ""), "warn");
-            setOscHud("外網模式 WS JPEG @" + wanFps + "fps");
+            setOscHud("外網 WS JPEG @" + wanFps + "fps");
             let settled = false;
-            const failToJpg = (why) => {
+            const failSoft = (why) => {
                 if (settled || !wanActive) {
                     return;
                 }
@@ -2338,6 +2369,7 @@
                     } catch (e) {}
                     wanWs = null;
                 }
+                // 先 jpg 頂住，再快速重開 WS（不長期停在低 fps）
                 startWanJpgFallback(why);
             };
             try {
@@ -2347,13 +2379,22 @@
                     wanMode = "ws";
                     settled = true;
                     wanLastFrameAt = Date.now();
+                    if (wanTimer) {
+                        clearInterval(wanTimer);
+                        wanTimer = null;
+                    }
                     try {
                         wanWs.send(JSON.stringify({ t: "live", fps: wanFps }));
                     } catch (e) {}
                     log("WAN WS open → live @" + wanFps + "fps", "ok");
+                    setOscHud("外網 WS @" + wanFps + "fps");
                 };
                 wanWs.onmessage = (ev) => {
                     if (!wanActive) {
+                        return;
+                    }
+                    if (hasLiveVideo()) {
+                        stopWanPipe();
                         return;
                     }
                     const d = ev.data;
@@ -2366,33 +2407,40 @@
                         return;
                     }
                     if (typeof d === "string" && d.indexOf("live_ok") >= 0) {
-                        setOscHud("外網 WS live @" + wanFps + "fps OK");
+                        setOscHud("外網 WS @" + wanFps + "fps OK");
                     }
                 };
-                wanWs.onerror = () => failToJpg("ws-error");
+                wanWs.onerror = () => failSoft("ws-error");
                 wanWs.onclose = () => {
                     if (!wanActive) {
                         return;
                     }
-                    if (wanMode === "ws") {
-                        wanMode = "";
-                        setTimeout(() => openWanWs("ws-reconnect"), 400);
+                    if (hasLiveVideo()) {
+                        stopWanPipe();
                         return;
                     }
-                    failToJpg("ws-close");
+                    if (wanMode === "ws") {
+                        wanMode = "";
+                        setTimeout(() => openWanWs("ws-reconnect"), 250);
+                        return;
+                    }
+                    failSoft("ws-close");
                 };
                 setTimeout(() => {
-                    if (wanActive && wanMode !== "ws") {
-                        failToJpg("ws-timeout");
+                    if (wanActive && wanMode !== "ws" && !hasLiveVideo()) {
+                        failSoft("ws-timeout");
                     }
-                }, 2500);
+                }, 2000);
             } catch (e) {
-                failToJpg(String(e && e.message ? e.message : e));
+                failSoft(String(e && e.message ? e.message : e));
             }
         }
 
         function startWanPipe(reason) {
-            if (isHubEntry) {
+            if (isHubEntry || isThumbnailMode) {
+                return;
+            }
+            if (hasLiveVideo()) {
                 return;
             }
             if (wanActive) {
@@ -2400,6 +2448,7 @@
             }
             wanActive = true;
             wanLastFrameAt = Date.now();
+            wanPendingJpeg = null;
             try {
                 showFreezeFrame();
             } catch (e) {}
@@ -2408,14 +2457,18 @@
                 clearInterval(wanWatchTimer);
             }
             wanWatchTimer = setInterval(() => {
-                if (!wanActive || wanMode !== "ws") {
+                if (!wanActive) {
                     return;
                 }
-                if (Date.now() - wanLastFrameAt > 2500) {
+                if (hasLiveVideo()) {
+                    stopWanPipe();
+                    return;
+                }
+                if (wanMode === "ws" && Date.now() - wanLastFrameAt > 2000) {
                     log("WAN WS silent → reconnect", "warn");
                     openWanWs("silent");
                 }
-            }, 1000);
+            }, 500);
         }
 
         function ensureWanAudioPassThrough() {
@@ -2446,13 +2499,14 @@
             if (!need) {
                 return;
             }
-            const waitMs = forceWan || feedBase || onGithubPagesEarly ? 3500 : 4500;
+            // 外網：立刻開 WS@≥30fps，WebRTC 起來後 showLiveVideo 會停 WAN
+            startWanPipe(forceWan ? "force-wan" : "parallel-wan");
+            // WebRTC 晚到也再保險一次
             setTimeout(() => {
-                if (hasLiveVideo()) {
-                    return;
+                if (!hasLiveVideo() && !wanActive) {
+                    startWanPipe("webrtc-timeout");
                 }
-                startWanPipe("webrtc-timeout");
-            }, waitMs);
+            }, 2500);
         }
 
         function clearConnectLock() {
@@ -2480,12 +2534,19 @@
                         remoteVideo.muted = false;
                         remoteVideo.volume = 1;
                     } catch (e) {}
+                    if (wanActive) {
+                        stopWanPipe();
+                    }
                     return;
                 }
 
                 if (wanActive) {
                     ensureWanAudioPassThrough();
                     return;
+                }
+                // 外網掉線時把 ≥30fps pipe 拉回來
+                if (forceWan || onGithubPagesEarly || feedBase) {
+                    startWanPipe("watchdog");
                 }
 
                 showFreezeFrame();
